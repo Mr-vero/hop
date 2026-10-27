@@ -2,7 +2,7 @@
 # Builds both apps on this Mac and publishes them as a GitHub release.
 #
 #   ./release.sh 1.0.2            bump both apps to 1.0.2, build, sign, tag and publish
-#   ./release.sh 1.0.2 --dry-run  bump and build into dist/ only; nothing is committed or published
+#   ./release.sh 1.0.2 --dry-run  build into dist/dry-run/ only; nothing is committed or published
 #
 # Needs: Xcode, Android SDK, gh (logged in), and android/keystore.properties with the release key.
 set -e
@@ -41,16 +41,18 @@ APKSIGNER=$(ls -d "$HOME"/Library/Android/sdk/build-tools/* | sort -V | tail -1)
 echo "→ Mac"
 mac/build.sh >/dev/null
 
-mkdir -p dist
-cp "$APK" dist/Hop-android.apk
-rm -f dist/Hop-mac.zip
-ditto -c -k --keepParent mac/build/Hop.app dist/Hop-mac.zip
-(cd dist && shasum -a 256 Hop-mac.zip Hop-android.apk > SHA256SUMS.txt)
-cat dist/SHA256SUMS.txt
+# Dry runs go in their own folder, so they can't be mistaken for the real release files
+OUT=dist; [ -n "$DRY" ] && OUT=dist/dry-run
+mkdir -p $OUT
+cp "$APK" $OUT/Hop-android.apk
+rm -f $OUT/Hop-mac.zip
+ditto -c -k --keepParent mac/build/Hop.app $OUT/Hop-mac.zip
+(cd $OUT && shasum -a 256 Hop-mac.zip Hop-android.apk > SHA256SUMS.txt)
+cat $OUT/SHA256SUMS.txt
 
 if [ -n "$DRY" ]; then
   git checkout -- $GRADLE $PLIST docs/index.html
-  echo "Dry run: built into dist/, version changes undone, nothing published."
+  echo "Dry run: built into $OUT/, version changes undone, nothing published."
   exit 0
 fi
 

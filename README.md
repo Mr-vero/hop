@@ -119,7 +119,7 @@ For signed release builds, create `android/keystore.properties` with the four ke
 ### Releasing
 One command on a Mac builds both apps, signs the APK, tags the commit and publishes the GitHub release with checksums:
 ```bash
-./release.sh 1.0.2              # or add --dry-run to only build into dist/
+./release.sh 1.0.2              # or add --dry-run to only build into dist/dry-run/
 ```
 It needs Xcode, the Android SDK, a logged-in `gh`, and `android/keystore.properties` pointing at the release key.
 
