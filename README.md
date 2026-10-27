@@ -28,8 +28,8 @@ iPhone owners get AirDrop, auto-filled SMS codes and iPhone Mirroring for free. 
 | | |
 |---|---|
 | 🔑 **Codes, instantly** | A verification code arrives by text, and it's **already on your Mac's clipboard**. Just press ⌘V. The code also shows in the menu bar for 30 seconds, and the clipboard clears itself after 2 minutes. |
-| 🔗 **Links & text** | Share → **Send to Mac** from any Android app. Links open in your Mac's browser, and anything else is copied. |
-| 📁 **Files, both ways** | Share photos or files from the phone and they land in `~/Downloads/Hop`. Drag files onto the menu-bar icon (or use *Open With → Hop*) and they land in `Downloads/Hop` on the phone. |
+| 🔗 **Links & text** | Share → **Send to Mac** → **Send** from any Android app. Links open in your Mac's browser, and anything else is copied. |
+| 📁 **Files, both ways** | Share photos or files from the phone and they land in your Mac's `~/Downloads`. Drag files onto the menu-bar icon (or use *Open With → Hop*) and they land in `Downloads/Hop` on the phone. |
 | 📋 **Clipboard tile** | A Quick Settings tile sends whatever you just copied on the phone to the Mac. |
 | 📱 **Your phone, on your Mac** | **Show Phone Screen** (⌘M) opens your live phone in a phone-shaped window with sound. Click, type, scroll and paste into it. The phone's own screen goes dark while you use it, like iPhone Mirroring. |
 
@@ -126,7 +126,10 @@ PROTOCOL.md Wire protocol
 
 - Nothing touches a server. Hop has no analytics, no crash reporting, no accounts and no cloud relay.
 - From texts and notifications, **only the extracted code** (plus the sender's name) is sent, and only to your paired Mac.
-- Received files stay in `Downloads/Hop` on each side.
+- Shares always ask before sending, so another app can't quietly push links or files to your Mac. Hop never sends its own private files.
+- Files received on the Mac get macOS's download quarantine, so Gatekeeper checks anything runnable before it opens.
+- OTPs are marked as concealed on the Mac clipboard, so clipboard managers don't keep them. They also clear after 2 minutes.
+- Received files stay in `~/Downloads` on the Mac and `Downloads/Hop` on the phone.
 - Unpair anytime from **Pair Phone… → Unpair & Make New Code** on the Mac. The old key stops working immediately.
 
 ## Limitations

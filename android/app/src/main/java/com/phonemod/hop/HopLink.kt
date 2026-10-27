@@ -101,8 +101,13 @@ object HopLink {
                 continue
             }
             _state.value = LinkState.Searching
-            val target = discover(pairing) ?: (pairing.host to pairing.port)
-            runCatching { session(net, pairing, target.first, target.second) }
+            val saved = pairing.host to pairing.port
+            val target = discover(pairing) ?: saved
+            val result = runCatching { session(net, pairing, target.first, target.second) }
+            // Anyone on the Wi-Fi can advertise our Mac's name; if that one fails the handshake, try the known address
+            if (result.isFailure && target != saved && _state.value !is LinkState.Connected) {
+                runCatching { session(net, pairing, saved.first, saved.second) }
+            }
             // A session that got as far as Connected was healthy; start retries fast again
             if (_state.value is LinkState.Connected) backoff = 3_000L
             _state.value = LinkState.Searching
@@ -120,6 +125,8 @@ object HopLink {
         s.connect(InetSocketAddress(host, port), 4_000)
         s.tcpNoDelay = true
         s.keepAlive = true
+        // A peer that stops answering mid-handshake must not stall the link forever
+        s.soTimeout = 10_000
         socket = s
         val input = DataInputStream(BufferedInputStream(s.getInputStream()))
         val output = DataOutputStream(BufferedOutputStream(s.getOutputStream()))
@@ -137,6 +144,8 @@ object HopLink {
             if (hello.optString("t") != "hello") throw IOException("bad hello")
             if (host != pairing.host || port != pairing.port) pairing.withAddress(app, host, port)
             _state.value = LinkState.Connected(hello.optString("name", pairing.macName))
+            // We ping every 2 minutes and the Mac answers, so silence for 5 means the link is dead
+            s.soTimeout = 300_000
 
             val pinger = scope.launch {
                 while (isActive) {

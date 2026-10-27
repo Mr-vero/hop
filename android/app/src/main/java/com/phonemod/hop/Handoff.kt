@@ -48,6 +48,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 private sealed interface Phase {
+    data class Confirm(val what: String) : Phase
     data class Sending(val what: String) : Phase
     data class Done(val what: String) : Phase
     data class Failed(val why: String) : Phase
@@ -66,6 +67,12 @@ abstract class HandoffActivity : ComponentActivity() {
         setContent { HopTheme { Sheet() } }
     }
 
+    /**
+     * Shares ask for a tap first: any app can open the share screen directly, so without this
+     * one could push links or files to the Mac without you knowing. Null means send right away.
+     */
+    protected open fun confirmText(): String? = null
+
     /** Reading the clipboard is only allowed once the window has focus. */
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
@@ -75,6 +82,12 @@ abstract class HandoffActivity : ComponentActivity() {
             phase = Phase.Failed("Pair Hop with your Mac first.")
             return
         }
+        val ask = try { confirmText() } catch (e: Exception) { "1 item" }
+        if (ask != null) phase = Phase.Confirm(ask) else send()
+    }
+
+    private fun send() {
+        phase = Phase.Sending("")
         lifecycleScope.launch {
             // A share can hand over a file we're not allowed to read; say so instead of crashing
             val ok = withContext(Dispatchers.IO) {
@@ -101,7 +114,11 @@ abstract class HandoffActivity : ComponentActivity() {
         return if (HopLink.sendText(text)) (if (isLink(text)) "Link opened on Mac" else "Copied on your Mac") else notFound()
     }
 
+    /** Only content from other apps: never file:// paths or Hop's own files, which Hop itself could read. */
+    protected fun allowed(uri: Uri) = uri.scheme == "content" && uri.authority?.startsWith(packageName) != true
+
     protected suspend fun sendUris(uris: List<Uri>): String? {
+        if (uris.any { !allowed(it) }) return fail("That item can't be shared, so nothing was sent.")
         if (!HopLink.awaitConnected()) return notFound()
         uris.forEachIndexed { i, uri ->
             var name = "file"
@@ -147,6 +164,7 @@ abstract class HandoffActivity : ComponentActivity() {
                         AnimatedContent(phase, label = "phase") { p ->
                             Text(
                                 when (p) {
+                                    is Phase.Confirm -> "Send to $macName?"
                                     is Phase.Sending -> "Sending to $macName"
                                     is Phase.Done -> p.what
                                     is Phase.Failed -> "Didn't send"
@@ -155,6 +173,7 @@ abstract class HandoffActivity : ComponentActivity() {
                             )
                         }
                         val sub = when (val p = phase) {
+                            is Phase.Confirm -> p.what
                             is Phase.Sending -> p.what
                             is Phase.Done -> "Sent to $macName"
                             is Phase.Failed -> p.why
@@ -170,6 +189,10 @@ abstract class HandoffActivity : ComponentActivity() {
                         startActivity(Intent(this@HandoffActivity, MainActivity::class.java))
                         finish()
                     }) { Text("Open Hop") }
+                    is Phase.Confirm -> Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        TextButton(onClick = { finish() }) { Text("Cancel") }
+                        androidx.compose.material3.Button(onClick = { send() }) { Text("Send") }
+                    }
                     else -> {}
                 }
             }
@@ -180,12 +203,23 @@ abstract class HandoffActivity : ComponentActivity() {
 /** Share → "Send to Mac" from any app. */
 class ShareActivity : HandoffActivity() {
     @Suppress("DEPRECATION")
+    private fun uris(): List<Uri> = when (intent.action) {
+        Intent.ACTION_SEND_MULTIPLE -> intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM).orEmpty()
+        else -> listOfNotNull(intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM))
+    }
+
+    override fun confirmText(): String {
+        val uris = uris()
+        if (uris.size > 1) return "${uris.size} files"
+        if (uris.size == 1) return contentResolver.query(uris[0], arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+            ?.use { c -> if (c.moveToFirst()) c.getString(0) else null } ?: "1 file"
+        val text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString().orEmpty().trim()
+        return text.take(140) + if (text.length > 140) "…" else ""
+    }
+
     override suspend fun deliver(): String? {
         val i = intent
-        val uris = when (i.action) {
-            Intent.ACTION_SEND_MULTIPLE -> i.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM).orEmpty()
-            else -> listOfNotNull(i.getParcelableExtra<Uri>(Intent.EXTRA_STREAM))
-        }
+        val uris = uris()
         if (uris.isNotEmpty()) return sendUris(uris)
         val text = i.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
             ?: return fail("There was nothing to send.")

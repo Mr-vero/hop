@@ -10,6 +10,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Environment
+import android.os.StatFs
 import android.provider.MediaStore
 import android.webkit.MimeTypeMap
 import androidx.core.app.NotificationCompat
@@ -51,8 +52,18 @@ class Inbox(private val ctx: Context) {
     }
 
     private fun startFile(rawName: String, size: Long) {
+        // A new file before the last one finished: drop the partial one
+        fileOut?.close()
+        fileOut = null
+        fileUri?.let { ctx.contentResolver.delete(it, null, null) }
+        fileUri = null
         fileName = rawName.substringAfterLast('/')
         remaining = size
+        // Keep some room free rather than filling the phone
+        if (size < 0 || StatFs(Environment.getExternalStorageDirectory().path).availableBytes - size < 500L shl 20) {
+            Notify.show(ctx, "Not enough space", "$fileName from your Mac wasn't saved.", null)
+            return
+        }
         val ext = fileName.substringAfterLast('.', "").lowercase()
         val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "application/octet-stream"
         val values = ContentValues().apply {

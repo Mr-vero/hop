@@ -17,6 +17,8 @@ final class HopServer {
     static let port: NWEndpoint.Port = 47900
     private var listener: NWListener?
     private var session: Session?
+    /** Connections that haven't proven they hold the pairing key yet */
+    fileprivate var pending = 0
     weak var delegate: ServerDelegate?
     private(set) var pairing = PairingKey.load()
     private(set) var boundPort: UInt16 = 47900
@@ -50,6 +52,8 @@ final class HopServer {
     }
 
     private func accept(_ conn: NWConnection) {
+        // Anyone on the Wi-Fi can connect; don't let a flood of strangers crowd out the phone
+        guard pending < 4 else { conn.cancel(); return }
         let s = Session(conn: conn, pairingKey: pairing.key, server: self)
         s.start()
     }
@@ -121,12 +125,19 @@ private final class Session {
             }
         }
         conn.start(queue: .main)
+        server?.pending += 1
         Task { await run() }
+        // A real phone finishes the handshake in well under a second
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(10))
+            if let self, self.phoneName == nil { self.close() }
+        }
     }
 
     func close() {
         guard !closed else { return }
         closed = true
+        if phoneName == nil { server?.pending -= 1 }
         conn.cancel()
         try? fileHandle?.close()
         server?.sessionClosed(self)
@@ -135,7 +146,7 @@ private final class Session {
     private func run() async {
         do {
             // Handshake: exchange randoms in the clear, then prove key possession with encrypted hellos
-            let hi = try JSONSerialization.jsonObject(with: try await readFrame()) as? [String: Any]
+            let hi = try JSONSerialization.jsonObject(with: try await readFrame(max: 512)) as? [String: Any]
             guard hi?["t"] as? String == "hi", let r = hi?["r"] as? String, let phoneRandom = Data(base64Encoded: r), phoneRandom.count == 32
             else { throw HopError.badHandshake }
             let macRandom = Data((0..<32).map { _ in UInt8.random(in: 0...255) })
@@ -147,6 +158,7 @@ private final class Session {
             else { throw HopError.badHandshake }
             try await sendJSON(["t": "hello", "name": Host.current().localizedName ?? "Mac"])
             phoneName = obj["name"] as? String ?? "Phone"
+            server?.pending -= 1
             server?.sessionAuthenticated(self, name: phoneName!)
 
             while !closed {
@@ -157,6 +169,8 @@ private final class Session {
                 case "ping": enqueue { try await self.sendJSON(["t": "pong"]) }
                 case "pong": break
                 case "file":
+                    // The protocol never starts a file inside another one
+                    guard fileRemaining <= 0 else { throw HopError.badFrame }
                     fileName = (obj["name"] as? String).map { ($0 as NSString).lastPathComponent } ?? "file"
                     fileRemaining = (obj["size"] as? NSNumber)?.int64Value ?? 0
                     fileHandle = server?.delegate?.fileStarted(name: fileName, size: fileRemaining)
@@ -226,10 +240,10 @@ private final class Session {
 
     // MARK: framing
 
-    private func readFrame() async throws -> Data {
+    private func readFrame(max: Int = 1 << 20) async throws -> Data {
         let header = try await readExactly(4)
         let len = header.reduce(0) { ($0 << 8) | Int($1) }
-        guard len > 0, len <= 1 << 20 else { throw HopError.badFrame }
+        guard len > 0, len <= max else { throw HopError.badFrame }
         return try await readExactly(len)
     }
 

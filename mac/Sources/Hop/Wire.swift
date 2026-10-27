@@ -24,10 +24,12 @@ enum PairingKey {
     @discardableResult
     static func reset() -> Stored {
         var bytes = [UInt8](repeating: 0, count: 32)
-        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        // Never fall back to a predictable key
+        guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else { fatalError("No secure randomness") }
         let s = Stored(key: Data(bytes), serviceId: String(UUID().uuidString.prefix(8)).lowercased())
-        try? JSONEncoder().encode(s).write(to: file, options: .atomic)
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        // Created owner-only from the start, so the key is never readable by others even briefly
+        try? FileManager.default.removeItem(at: file)
+        FileManager.default.createFile(atPath: file.path, contents: try? JSONEncoder().encode(s), attributes: [.posixPermissions: 0o600])
         return s
     }
 }

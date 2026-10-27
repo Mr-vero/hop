@@ -250,7 +250,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Serv
         case "otp":
             guard let code = json["code"] as? String else { return }
             let from = json["from"] as? String ?? "your phone"
-            copy(code)
+            copy(code, concealed: true)
             notify("Code \(code) copied", "From \(from). Paste it with ⌘V.")
             recentCodes.insert((code, from, Date()), at: 0)
             recentCodes = Array(recentCodes.prefix(5))
@@ -289,8 +289,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Serv
     }
 
     func fileStarted(name: String, size: Int64) -> FileHandle? {
-        let url = Self.uniqueURL(for: name)
+        // Leave room on the disk rather than letting a transfer fill it
+        let free = (try? Self.downloads.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
+            .volumeAvailableCapacityForImportantUsage ?? .max
+        guard size >= 0, free - size > 1 << 30 else {
+            notify("Not enough space", "\(name) from your phone wasn't saved.")
+            return nil
+        }
+        var url = Self.uniqueURL(for: name)
         FileManager.default.createFile(atPath: url.path, contents: nil)
+        // Mark it as downloaded, so Gatekeeper checks it before anything in it can run
+        var values = URLResourceValues()
+        values.quarantineProperties = [kLSQuarantineAgentNameKey as String: "Hop",
+                                       kLSQuarantineTypeKey as String: kLSQuarantineTypeOtherDownload]
+        try? url.setResourceValues(values)
         receivingPaths[ObjectIdentifier(self)] = url
         return try? FileHandle(forWritingTo: url)
     }
@@ -305,9 +317,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Serv
 
     // MARK: helpers
 
-    private func copy(_ text: String) {
+    private func copy(_ text: String, concealed: Bool = false) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
+        // Codes are secrets: ask clipboard managers not to keep them (nspasteboard.org convention)
+        if concealed {
+            NSPasteboard.general.setString("", forType: NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType"))
+            NSPasteboard.general.setString("", forType: NSPasteboard.PasteboardType("org.nspasteboard.TransientType"))
+        }
     }
 
     private func notify(_ title: String, _ body: String, userInfo: [String: String] = [:]) {
