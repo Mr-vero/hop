@@ -17,6 +17,8 @@
   <a href="LICENSE"><img alt="MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
 </p>
 
+<p align="center"><a href="https://mr-vero.github.io/hop/"><b>mr-vero.github.io/hop</b></a></p>
+
 ---
 
 iPhone owners get AirDrop, auto-filled SMS codes and iPhone Mirroring for free. Hop gives an Android phone the same tricks with a Mac. It's two small apps: a menu-bar app on the Mac and a companion app on the phone.
