@@ -73,7 +73,9 @@ Download both from the **[latest release](../../releases/latest)**.
    - **Codes to Mac:** catches codes from apps that show them in notifications.
    - **Alerts from Mac** and the **Quick Settings tile** are optional.
 
-> Play Protect may warn about an app from outside the Play Store that reads SMS. Hop's source is all here, so you can check exactly what it does.
+> **"Harmful app blocked"?** Google Play Protect warns about any app from outside the Play Store that reads SMS and notifications, because code-stealing malware does the same. Hop's full source is in this repo, so you can check exactly what it does. Tap **More details → Install anyway**.
+>
+> In some countries Google blocks these installs with no override. Install over USB from your Mac instead: turn on **USB debugging**, plug in, and run `adb install Hop-android.apk` (`brew install android-platform-tools` gets you `adb`).
 
 ### Phone screen mirroring (optional)
 Mirroring uses Android's debugging bridge, so it needs a one-time setup:
