@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_SMS" />
+
+    <application
+        android:name=".HopApp"
+        android:label="Hop"
+        android:icon="@mipmap/ic_launcher"
+        android:theme="@style/Theme.Hop">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- "Share → Hop" from any app sends links, text and files to the Mac -->
+        <activity
+            android:name=".ShareActivity"
+            android:exported="true"
+            android:label="Send to Mac"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:theme="@style/Theme.Hop.Overlay">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+        </activity>
+
+        <!-- Clipboard can only be read by a focused activity, so the tile opens this briefly -->
+        <activity
+            android:name=".ClipboardActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:theme="@style/Theme.Hop.Overlay" />
+
+        <service
+            android:name=".ClipTile"
+            android:exported="true"
+            android:icon="@drawable/ic_hop"
+            android:label="Send to Mac"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <!-- Incoming SMS, read only to spot one-time codes; nothing else leaves the phone -->
+        <receiver
+            android:name=".SmsCodeReceiver"
+            android:exported="true"
+            android:permission="android.permission.BROADCAST_SMS">
+            <intent-filter>
+                <action android:name="android.provider.Telephony.SMS_RECEIVED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Sees notifications only to spot one-time codes; nothing else leaves the phone -->
+        <service
+            android:name=".OtpListener"
+            android:exported="true"
+            android:label="Hop codes to Mac"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+    </application>
+</manifest>
