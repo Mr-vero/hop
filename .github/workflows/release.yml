@@ -1,0 +1,81 @@
+# Push a tag like v1.0.2 and GitHub builds the signed APK and the Mac app from that exact commit,
+# then publishes them as a release. The version in the tag must match the one in both apps.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches the app versions
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          android=$(sed -n 's/.*versionName = "\(.*\)".*/\1/p' android/app/build.gradle.kts)
+          mac=$(sed -n 's/.*CFBundleShortVersionString<\/key><string>\(.*\)<\/string>.*/\1/p' mac/Info.plist)
+          echo "tag=$tag android=$android mac=$mac"
+          [ "$tag" = "$android" ] && [ "$tag" = "$mac" ] || { echo "::error::Bump versionName and CFBundleShortVersionString to $tag first"; exit 1; }
+
+  android:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "21" }
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Restore the signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          [ -n "$KEYSTORE_BASE64" ] || { echo "::error::Add the ANDROID_KEYSTORE_BASE64 and ANDROID_KEYSTORE_PASSWORD secrets"; exit 1; }
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/hop-release.jks"
+          printf 'storeFile=%s\nstorePassword=%s\nkeyAlias=hop\nkeyPassword=%s\n' \
+            "$RUNNER_TEMP/hop-release.jks" "$KEYSTORE_PASSWORD" "$KEYSTORE_PASSWORD" > android/keystore.properties
+      - run: ./gradlew assembleRelease
+        working-directory: android
+      - name: Check it's signed with the release key
+        run: |
+          apksigner=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/apksigner
+          "$apksigner" verify --print-certs android/app/build/outputs/apk/release/app-release.apk | grep "CN=Hop"
+          cp android/app/build/outputs/apk/release/app-release.apk Hop-android.apk
+      - uses: actions/upload-artifact@v4
+        with: { name: android, path: Hop-android.apk }
+      - if: always()
+        run: rm -f android/keystore.properties "$RUNNER_TEMP/hop-release.jks"
+
+  mac:
+    needs: version
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./build.sh
+        working-directory: mac
+      - run: ditto -c -k --keepParent mac/build/Hop.app Hop-mac.zip
+      - uses: actions/upload-artifact@v4
+        with: { name: mac, path: Hop-mac.zip }
+
+  publish:
+    needs: [android, mac]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { merge-multiple: true }
+      - run: sha256sum Hop-mac.zip Hop-android.apk > SHA256SUMS.txt
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<'NOTES'
+          **Install:** download `Hop-mac.zip` (macOS 14+) and `Hop-android.apk` (Android 12+). See the [README](https://github.com/Mr-vero/hop#install).
+          Built and signed by GitHub Actions from this tag's source.
+          NOTES
+          gh release create "$GITHUB_REF_NAME" Hop-mac.zip Hop-android.apk SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY" --title "Hop ${GITHUB_REF_NAME#v}" --notes-file notes.md --generate-notes
