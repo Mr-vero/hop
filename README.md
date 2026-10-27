@@ -117,11 +117,13 @@ cd android
 For signed release builds, create `android/keystore.properties` with the four keys `storeFile`, `storePassword`, `keyAlias` and `keyPassword`. Never commit it.
 
 ### Releasing
-GitHub Actions builds every push to `main` to check that both apps compile. To publish a release:
-1. Bump `versionName`/`versionCode` in `android/app/build.gradle.kts` and `CFBundleShortVersionString`/`CFBundleVersion` in `mac/Info.plist`.
-2. Commit, then push a matching tag: `git tag v1.0.2 && git push origin v1.0.2`.
+One command on a Mac builds both apps, signs the APK, tags the commit and publishes the GitHub release with checksums:
+```bash
+./release.sh 1.0.2              # or add --dry-run to only build into dist/
+```
+It needs Xcode, the Android SDK, a logged-in `gh`, and `android/keystore.properties` pointing at the release key.
 
-GitHub then builds the signed APK and the universal Mac app from that tag and publishes them, with checksums. Signing uses two repository secrets: `ANDROID_KEYSTORE_BASE64` (the base64-encoded keystore) and `ANDROID_KEYSTORE_PASSWORD`.
+The same build can run on GitHub Actions (`.github/workflows/`), started by hand. It needs the repository secrets `ANDROID_KEYSTORE_BASE64` and `ANDROID_KEYSTORE_PASSWORD`.
 
 ### Project layout
 ```

@@ -1,10 +1,9 @@
-# Checks that both apps still compile on every push and pull request (unsigned, nothing published)
+# Checks that both apps still compile (unsigned, nothing published).
+# Manual for now; switch `on:` back to push/pull_request once GitHub Actions is available on the account.
 name: Build
 
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
 
 jobs:
   android:

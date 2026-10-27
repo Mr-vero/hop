@@ -1,10 +1,10 @@
-# Push a tag like v1.0.2 and GitHub builds the signed APK and the Mac app from that exact commit,
-# then publishes them as a release. The version in the tag must match the one in both apps.
+# Builds the signed APK and the Mac app on GitHub for an existing version tag and publishes the release.
+# Releases are made locally with ./release.sh for now, so this only runs when started by hand
+# (Actions → Release → Run workflow, on a tag). The version in the tag must match both apps.
 name: Release
 
 on:
-  push:
-    tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
