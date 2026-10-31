@@ -98,6 +98,7 @@ class MainActivity : ComponentActivity() {
         var resumes by remember { mutableIntStateOf(0) }
         LifecycleResumeEffect(Unit) { resumes++; HopLink.poke(); onPauseOrDispose { } }
         val notifPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { resumes++ }
+        val nearPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { resumes++; HopLink.nearChanged() }
 
         Column(
             Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface).safeDrawingPadding()
@@ -141,6 +142,11 @@ class MainActivity : ComponentActivity() {
                 SetupRow("Alerts from Mac", "Lets you know when a file or link arrives from your Mac.", done = notifOn, action = "Allow") {
                     notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
                 }
+                val nearOn = NearBeacon.allowed(this@MainActivity)
+                SetupRow(
+                    "Near your Mac", "Next to your Mac, use its keyboard and mouse on this phone. Right up against it, the phone appears on the Mac's screen. Uses a private Bluetooth signal only your Mac recognises.",
+                    done = nearOn, action = "Allow",
+                ) { nearPermission.launch(Manifest.permission.BLUETOOTH_ADVERTISE) }
                 SetupRow("Quick Settings tile", "One tap in the pull-down panel sends your clipboard to the Mac.", done = false, action = "Add") {
                     getSystemService(StatusBarManager::class.java).requestAddTileService(
                         ComponentName(this@MainActivity, ClipTile::class.java), "Send to Mac",

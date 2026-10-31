@@ -15,6 +15,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Serv
     /** Latest codes first, so a missed banner never means a lost code. */
     private var recentCodes: [(code: String, from: String, at: Date)] = []
     private var notificationsAllowed = true
+    // Near the Mac: share the keyboard when close, show the phone when touching
+    private let near = NearSensor()
+    private let share = KeyboardShare()
+    private var autoMirror = false
+    private var calibrating = false
+    private var nearItem: NSMenuItem?
+    private var lastNearFailure = Date.distantPast
+    private var nearEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: "nearEnabled") }
+        set { UserDefaults.standard.set(newValue, forKey: "nearEnabled") }
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         UNUserNotificationCenter.current().delegate = self
@@ -28,6 +39,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Serv
         server.delegate = self
         server.start()
         mirror.onChange = { [weak self] in self?.refresh() }
+        near.onZone = { [weak self] in self?.nearZoneChanged($0) }
+        near.onSignal = { [weak self] _ in self?.nearItem?.title = self?.nearStatus() ?? "" }
+        share.onChange = { [weak self] in self?.nearItem?.title = self?.nearStatus() ?? "" }
         // `open Hop.app --args --show-phone` opens the phone screen straight away (handy from Terminal)
         if CommandLine.arguments.contains("--show-phone") { toggleMirror() }
         refresh()
@@ -66,6 +80,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Serv
         }
         menu.addItem(.separator())
         menu.addItem(item(mirror.isRunning ? "Hide Phone Screen" : "Show Phone Screen", #selector(toggleMirror), "m"))
+        let nearToggle = item("Use Phone When It's Near", #selector(toggleNear), "")
+        nearToggle.state = nearEnabled ? .on : .off
+        menu.addItem(nearToggle)
+        nearItem = nil
+        if nearEnabled {
+            let status = NSMenuItem(title: nearStatus(), action: nil, keyEquivalent: "")
+            status.isEnabled = false
+            status.indentationLevel = 1
+            menu.addItem(status)
+            nearItem = status
+            if !KeyboardShare.hasPermission {
+                let ask = item("⚠︎ Allow Hop to Share Your Keyboard…", #selector(askInputPermission), "")
+                ask.indentationLevel = 1
+                menu.addItem(ask)
+            }
+            let cal = item("Calibrate Distance…", #selector(calibrate), "")
+            cal.indentationLevel = 1
+            menu.addItem(cal)
+        }
         menu.addItem(.separator())
         menu.addItem(item("Send File to Phone…", #selector(pickFile), "o", enabled: connected))
         menu.addItem(item("Send Clipboard to Phone", #selector(sendClipboard), "v", enabled: connected))
@@ -85,6 +118,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Serv
 
     @objc private func toggleMirror() {
         if mirror.isRunning { mirror.stop(); return }
+        share.stop()
+        autoMirror = false
+        startMirror()
+    }
+
+    private func startMirror() {
         Task {
             do {
                 try await mirror.start(phoneIP: server.phoneAddress, title: phoneName ?? "Phone")
@@ -233,6 +272,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Serv
     func phoneDidConnect(name: String) {
         phoneName = name
         UserDefaults.standard.set(true, forKey: "everPaired")
+        if nearEnabled { near.start(key: server.pairing.key) }
         if pairWindow?.isVisible == true {
             pairWindow?.close()
             notify("Paired with \(name)", "Codes, links and files will now hop between your devices.")
@@ -242,7 +282,140 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Serv
 
     func phoneDidDisconnect() {
         phoneName = nil
+        near.stop()
+        share.stop()
         refresh()
+    }
+
+    // MARK: near the Mac
+
+    @objc private func toggleNear() {
+        nearEnabled.toggle()
+        if nearEnabled {
+            if !KeyboardShare.hasPermission { KeyboardShare.askPermission() }
+            if phoneName != nil { near.start(key: server.pairing.key) }
+        } else {
+            near.stop()
+            share.stop()
+            if autoMirror { mirror.stop(); autoMirror = false }
+        }
+        refresh()
+    }
+
+    @objc private func askInputPermission() {
+        KeyboardShare.askPermission()
+        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+    }
+
+    private func nearZoneChanged(_ zone: NearSensor.Zone) {
+        guard nearEnabled, !calibrating, phoneName != nil else { return }
+        switch zone {
+        case .touching:
+            // Right up against the Mac: show the phone itself
+            share.stop()
+            if !mirror.isRunning { autoMirror = true; startMirror() }
+        case .near:
+            if autoMirror, mirror.isRunning { mirror.stop() }
+            autoMirror = false
+            startSharing()
+        case .far:
+            share.stop()
+            if autoMirror { mirror.stop(); autoMirror = false }
+        }
+        nearItem?.title = nearStatus()
+    }
+
+    private func startSharing() {
+        guard !share.isRunning, !mirror.isRunning, KeyboardShare.hasPermission else { return }
+        Task {
+            do {
+                let stream = try await Mirror.openStream(phoneIP: server.phoneAddress, controlOnly: true)
+                guard near.zone == .near, !share.isRunning, !mirror.isRunning else { return }
+                share.start(stream: stream)
+            } catch {
+                // Say it once in a while, not every time the phone wanders back
+                guard Date().timeIntervalSince(lastNearFailure) > 600 else { return }
+                lastNearFailure = Date()
+                if case Mirror.Failure.notInstalled = error {
+                    notify("Keyboard sharing needs scrcpy", "Install it once in Terminal with: brew install scrcpy")
+                } else {
+                    notify("Couldn't reach your phone", "Plug it into this Mac with USB once. After that it works over Wi-Fi until the phone restarts.")
+                }
+            }
+        }
+    }
+
+    private func nearStatus() -> String {
+        if phoneName == nil { return "Waiting for your phone to connect" }
+        if near.bluetoothOff { return "Turn on Bluetooth on this Mac" }
+        guard let rssi = near.rssi else { return "Phone not sensed. Allow \"Near your Mac\" in Hop on the phone" }
+        let signal = "  (\(Int(rssi)) dBm)"
+        switch near.zone {
+        case .far: return "Not close enough yet" + signal
+        case .touching: return "Touching: showing your phone" + signal
+        case .near:
+            if !KeyboardShare.hasPermission { return "Near: allow keyboard sharing below" + signal }
+            if share.onPhone { return "Using the phone. ⌘⎋ or push left to return" + signal }
+            if share.ready { return "Near: push the pointer off the right edge" + signal }
+            return "Near: connecting to the phone…" + signal
+        }
+    }
+
+    @objc private func calibrate() {
+        guard phoneName != nil else {
+            alert("Connect your phone first", "Open Hop on the phone, on the same Wi-Fi as this Mac.")
+            return
+        }
+        if !nearEnabled { toggleNear() }
+        near.start(key: server.pairing.key)
+        calibrating = true
+        share.stop()
+        Task {
+            defer { calibrating = false; nearZoneChanged(near.zone) }
+            guard let touching = await measure("Put your phone against the Mac",
+                                               "Hold it right against the right side of the Mac, where the phone screen should pop up. Then click Measure.")
+            else { return }
+            guard let nearby = await measure("Now put it where you usually keep it",
+                                             "For example on the desk beside the Mac. Within this distance your keyboard and mouse can move to the phone. Then click Measure.")
+            else { return }
+            guard touching > nearby + 4 else {
+                alert("Those two spots look the same", "Bluetooth can't tell them apart. Hold the phone closer to the Mac in the first step and try again.")
+                return
+            }
+            near.touchThreshold = max(touching - 4, (touching + nearby) / 2)
+            near.nearThreshold = nearby - 6
+            alert("All set", "Your keyboard and mouse will move to the phone within that distance, and the phone screen appears when it's against the Mac.")
+        }
+    }
+
+    /** Asks the user to place the phone, then averages its signal for a few seconds. */
+    private func measure(_ title: String, _ text: String) async -> Double? {
+        NSApp.activate()
+        let a = NSAlert()
+        a.messageText = title
+        a.informativeText = text
+        a.addButton(withTitle: "Measure")
+        a.addButton(withTitle: "Cancel")
+        guard a.runModal() == .alertFirstButtonReturn else { return nil }
+        try? await Task.sleep(for: .seconds(1.5)) // let the smoothed signal settle at the new spot
+        var samples: [Double] = []
+        for _ in 0..<10 {
+            try? await Task.sleep(for: .milliseconds(300))
+            if let r = near.rssi { samples.append(r) }
+        }
+        guard samples.count >= 5 else {
+            alert("Hop can't hear your phone", "On the phone, open Hop and allow \"Near your Mac\". Make sure Bluetooth is on on both devices.")
+            return nil
+        }
+        return samples.sorted()[samples.count / 2]
+    }
+
+    private func alert(_ title: String, _ text: String) {
+        NSApp.activate()
+        let a = NSAlert()
+        a.messageText = title
+        a.informativeText = text
+        a.runModal()
     }
 
     func received(json: [String: Any]) {

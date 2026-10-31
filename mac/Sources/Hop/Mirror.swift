@@ -25,14 +25,19 @@ final class Mirror {
 
     enum Failure: Error { case notInstalled, noPhone }
 
-    /// Starts mirroring. `phoneIP` is the address of the phone's Hop connection, used when there's no cable.
-    func start(phoneIP: String?, title: String) async throws {
-        guard let jar = Self.serverJar else { throw Failure.notInstalled }
-        if let window, window.isVisible { window.makeKeyAndOrderFront(nil); return }
-        let serial = try await Self.findPhone(phoneIP: phoneIP)
+    /// A connection to the phone (not started yet). `phoneIP` is the address of the phone's Hop
+    /// connection, used when there's no cable.
+    static func openStream(phoneIP: String?, controlOnly: Bool = false) async throws -> PhoneStream {
+        guard let jar = serverJar else { throw Failure.notInstalled }
+        let serial = try await findPhone(phoneIP: phoneIP)
+        return PhoneStream(config: .init(serial: serial, adb: "\(brew)/adb", serverJar: jar.path, serverVersion: jar.version,
+                                         wireless: serial.contains(":"), controlOnly: controlOnly))
+    }
 
-        let stream = PhoneStream(config: .init(serial: serial, adb: "\(Self.brew)/adb", serverJar: jar.path,
-                                               serverVersion: jar.version, wireless: serial.contains(":")))
+    /// Starts mirroring in Hop's phone-shaped window.
+    func start(phoneIP: String?, title: String) async throws {
+        if let window, window.isVisible { window.makeKeyAndOrderFront(nil); return }
+        let stream = try await Self.openStream(phoneIP: phoneIP)
         let w = PhoneWindow(stream: stream, title: title)
         w.onClose = { [weak self] in self?.window = nil; self?.onChange() }
         stream.onEnded = { [weak w] _ in w?.close() }

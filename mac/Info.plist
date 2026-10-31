@@ -12,6 +12,7 @@
     <key>CFBundleVersion</key><string>3</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSUIElement</key><true/>
+    <key>NSBluetoothAlwaysUsageDescription</key><string>Hop senses when your paired phone is next to this Mac, to share the keyboard and show the phone.</string>
     <key>NSLocalNetworkUsageDescription</key><string>Hop talks directly to your paired phone on this Wi-Fi network.</string>
     <key>CFBundleDocumentTypes</key>
     <array>

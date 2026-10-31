@@ -75,6 +75,19 @@ object HopLink {
                 override fun onLost(network: Network) { if (wifi == network) wifi = null }
             },
         )
+        // Let the Mac sense how close the phone is, but only while the two are connected
+        scope.launch {
+            state.collect { s ->
+                val pairing = if (s is LinkState.Connected) Pairing.load(app) else null
+                if (pairing != null) NearBeacon.start(app, pairing.key) else NearBeacon.stop()
+            }
+        }
+    }
+
+    /** Called after the user grants Nearby devices, so the signal starts without reconnecting. */
+    fun nearChanged() {
+        val pairing = Pairing.load(app) ?: return
+        if (_state.value is LinkState.Connected) NearBeacon.start(app, pairing.key)
     }
 
     /** Start (or nudge) the connection loop; cheap to call often. */
