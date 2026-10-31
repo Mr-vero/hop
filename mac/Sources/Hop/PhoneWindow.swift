@@ -13,6 +13,8 @@ final class PhoneWindow: NSWindow {
     var onClose: () -> Void = {}
     /** The first picture arrived and the window animated in. */
     var onShown: () -> Void = {}
+    /** Files dropped onto the phone. */
+    var onDropFiles: ([URL]) -> Void = { _ in }
     private(set) var presented = false
     /** Closed with the close button or ⌘W, as opposed to the connection ending or Hop closing it. */
     private(set) var closedByUser = false
@@ -30,6 +32,7 @@ final class PhoneWindow: NSWindow {
         isReleasedWhenClosed = false
         contentView = frameView
         frameView.onClose = { [weak self] in self?.closedByUser = true; self?.close() }
+        frameView.onDropFiles = { [weak self] in self?.onDropFiles($0) }
         if dock {
             backgroundColor = .black
             collectionBehavior = [.fullScreenPrimary]
@@ -168,6 +171,7 @@ final class PhoneFrameView: NSView {
     private var hideToolbar: Task<Void, Never>?
     var zoom: CGFloat = 1
     var onClose: () -> Void = {}
+    var onDropFiles: ([URL]) -> Void = { _ in }
 
     /** Space above the phone for the hover toolbar. */
     private static let toolbarSpace: CGFloat = 44
@@ -206,6 +210,7 @@ final class PhoneFrameView: NSView {
             }
         }
         addSubview(toolbar)
+        registerForDraggedTypes([.fileURL])
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
     }
 
@@ -265,6 +270,29 @@ final class PhoneFrameView: NSView {
         CATransaction.commit()
         let t = toolbar.fittingSize
         toolbar.frame = CGRect(x: (bounds.width - t.width) / 2, y: (Self.toolbarSpace - t.height) / 2 - 2, width: t.width, height: t.height)
+    }
+
+    // MARK: drag and drop: files dropped on the phone go to it
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        highlight(true)
+        return .copy
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) { highlight(false) }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        highlight(false)
+        let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        guard !urls.isEmpty else { return false }
+        onDropFiles(urls)
+        return true
+    }
+
+    private func highlight(_ on: Bool) {
+        let target = bezel ? device : screen
+        target.borderWidth = on ? 3 : (bezel ? 1 : 0)
+        target.borderColor = on ? NSColor.controlAccentColor.cgColor : NSColor(white: 1, alpha: 0.14).cgColor
     }
 
     // MARK: hover toolbar

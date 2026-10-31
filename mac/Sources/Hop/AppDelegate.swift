@@ -25,6 +25,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Serv
     private var opening = false
     private var lastOpenAttempt = Date.distantPast
     private let hud = ConnectHUD()
+    private let clipboard = ClipboardSync()
+    /** Battery and signal the phone last reported. */
+    private var phoneStatus: (battery: Int, charging: Bool, signal: Int)?
+    private var ringing = false
+    private var calibrationReply: CheckedContinuation<Int?, Never>?
     private var connectStarted = Date()
     /** One "couldn't connect" message per arrival of the phone, not one per retry. */
     private var toldFailure = false
@@ -59,6 +64,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Serv
             try? "\(took) s\n".write(to: file, atomically: true, encoding: .utf8)
         }
         mirror.onFailed = { [weak self] in self?.connectFailed() }
+        mirror.onDropFiles = { [weak self] urls, stream in
+            guard let self else { return }
+            // Over the Hop link the phone shows "Received from Mac"; without it, copy straight over the debugging connection
+            if phoneName != nil { send(files: urls) } else { stream.push(urls) }
+            hud.show(urls.count == 1 ? "Sending \(urls[0].lastPathComponent)" : "Sending \(urls.count) files", style: .done, hideAfter: 1.5)
+        }
+        clipboard.sendOverLink = { [weak self] text in self?.server.sendJSON(["t": "clip", "text": text]) ?? false }
+        clipboard.phoneIP = { [weak self] in self?.server.phoneAddress }
+        clipboard.start()
         mirror.onUserClosed = { [weak self] in
             guard let self else { return }
             // Closed by hand while the phone is still near: respect that until it leaves
@@ -90,7 +104,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Serv
         statusItem.button?.image = image
 
         let menu = NSMenu()
-        let status = NSMenuItem(title: connected ? "Connected to \(phoneName!)" : "Phone not connected", action: nil, keyEquivalent: "")
+        var statusText = connected ? "Connected to \(phoneName!)" : "Phone not connected"
+        if connected, let st = phoneStatus {
+            // e.g. "Connected to Galaxy S25 Ultra · 80% ⚡ · ▂▄▆_"
+            statusText += " · \(st.battery)%\(st.charging ? " ⚡" : "")"
+            if st.signal >= 0 { statusText += " · " + String("▂▄▆█".prefix(max(1, st.signal))) + String(repeating: "_", count: max(0, 4 - max(1, st.signal))) }
+        }
+        let status = NSMenuItem(title: statusText, action: nil, keyEquivalent: "")
         status.isEnabled = false
         menu.addItem(status)
         if !connected {
@@ -140,6 +160,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Serv
         menu.addItem(.separator())
         menu.addItem(item("Send File to Phone…", #selector(pickFile), "o", enabled: connected))
         menu.addItem(item("Send Clipboard to Phone", #selector(sendClipboard), "v", enabled: connected))
+        let clip = item("Universal Clipboard", #selector(toggleClipboard), "")
+        clip.state = clipboard.enabled ? .on : .off
+        menu.addItem(clip)
+        menu.addItem(item(ringing ? "Stop Ringing Phone" : "Find My Phone", #selector(toggleRing), "", enabled: connected))
         menu.addItem(.separator())
         menu.addItem(item("Pair Phone…", #selector(showPairing), "p"))
         menu.addItem(item("Open Received Files", #selector(openDownloads), ""))
@@ -335,7 +359,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Serv
         refresh()
     }
 
+    @objc private func toggleClipboard() {
+        clipboard.enabled.toggle()
+        refresh()
+    }
+
+    @objc private func toggleRing() {
+        ringing.toggle()
+        server.sendJSON(["t": ringing ? "ring" : "ring-stop"])
+        if ringing {
+            hud.show("Ringing \(phoneName ?? "your phone")…", style: .working, hideAfter: 3)
+            // The phone stops by itself after 30 seconds
+            Task { try? await Task.sleep(for: .seconds(30)); self.ringing = false; self.refresh() }
+        }
+        refresh()
+    }
+
     func phoneDidDisconnect() {
+        phoneStatus = nil
+        ringing = false
         // Near-Mac features keep going: they use Bluetooth plus USB or wireless debugging, not this link
         phoneName = nil
         refresh()
@@ -379,8 +421,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Serv
 
     private func nearStatus() -> String {
         if near.bluetoothOff { return "Turn on Bluetooth on this Mac" }
-        guard let rssi = near.rssi else { return "Phone not sensed. Allow \"Near your Mac\" in Hop on the phone" }
-        let signal = "  (\(Int(rssi)) dBm)"
+        // Prefer the phone's own reading of the Mac's signal: it's the one deciding
+        guard let rssi = near.phoneRSSI.map(Double.init) ?? near.rssi else { return "Phone not sensed. Allow \"Near your Mac\" in Hop on the phone" }
+        let signal = "  (\(Int(rssi)) dBm\(near.phoneRSSI != nil ? ", from phone" : ""))"
         switch near.zone {
         case .far: return "Not close enough yet" + signal
         case .near:
@@ -397,12 +440,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Serv
         calibrating = true
         Task {
             defer { calibrating = false; nearZoneChanged(near.zone) }
+            // A phone that judges distance itself measures the Mac's signal, more steadily than the Mac can
+            if phoneName != nil {
+                NSApp.activate()
+                let a = NSAlert()
+                a.messageText = "Put your phone where it should count as near"
+                a.informativeText = "For example on the desk right beside the Mac. Closer than this, the phone appears on the Mac; farther, it goes away. Then click Measure."
+                a.addButton(withTitle: "Measure")
+                a.addButton(withTitle: "Cancel")
+                guard a.runModal() == .alertFirstButtonReturn else { return }
+                try? await Task.sleep(for: .seconds(3)) // let the phone's reading settle at the new spot
+                let r: Int? = await withCheckedContinuation { cont in
+                    calibrationReply = cont
+                    server.sendJSON(["t": "near-calibrate"])
+                    Task { try? await Task.sleep(for: .seconds(5)); self.finishCalibration(nil) }
+                }
+                if let r {
+                    alert("All set", "Your phone measured the Mac at \(r) dBm there. It will appear on the Mac when it's about this close, and go away when you take it farther.")
+                    return
+                }
+                // The phone couldn't hear the Mac yet: fall back to the Mac measuring the phone
+            }
             guard let nearby = await measure("Put your phone where it should count as near",
                                              "For example on the desk right beside the Mac. Closer than this, the phone appears on the Mac; farther, it goes away. Then click Measure.")
             else { return }
             near.nearThreshold = nearby - 3
             alert("All set", "Your phone will appear on the Mac when it's about this close, and go away when you take it farther.")
         }
+    }
+
+    private func finishCalibration(_ rssi: Int?) {
+        calibrationReply?.resume(returning: rssi)
+        calibrationReply = nil
     }
 
     /** Asks the user to place the phone, then averages its signal for a few seconds. */
@@ -468,6 +537,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Serv
             } else {
                 copy(text)
                 notify("Copied from \(phoneName ?? "phone")", text)
+            }
+        case "near":
+            let rssi = (json["rssi"] as? NSNumber)?.intValue
+            near.phoneSaid(near: json["near"] as? Bool, rssi: rssi)
+        case "near-calibrated":
+            finishCalibration((json["ok"] as? Bool) == true ? (json["rssi"] as? NSNumber)?.intValue : nil)
+        case "status":
+            phoneStatus = ((json["battery"] as? NSNumber)?.intValue ?? 0, json["charging"] as? Bool ?? false,
+                           (json["signal"] as? NSNumber)?.intValue ?? -1)
+            refresh()
+        case "notif":
+            guard let id = json["id"] as? String else { return }
+            let icon = (json["icon"] as? String).flatMap { Data(base64Encoded: $0) }.flatMap(NSImage.init(data:))
+            hud.showNotification(id: id, app: json["app"] as? String ?? "", title: json["title"] as? String ?? "",
+                                 text: json["text"] as? String ?? "", icon: icon, canReply: json["reply"] as? Bool ?? false,
+                                 onReply: { [weak self] text in self?.server.sendJSON(["t": "notif-reply", "id": id, "text": text]) },
+                                 onDismiss: { [weak self] in self?.server.sendJSON(["t": "notif-dismiss", "id": id]) })
+        case "notif-gone":
+            if let id = json["id"] as? String { hud.removeNotification(id: id) }
+        case "call":
+            switch json["state"] as? String {
+            case "ringing":
+                hud.showCall(name: json["name"] as? String ?? "", detail: json["detail"] as? String ?? "",
+                             onAnswer: { [weak self] in self?.server.sendJSON(["t": "call-answer"]) },
+                             onDecline: { [weak self] in self?.server.sendJSON(["t": "call-decline"]) })
+            case "active": hud.callEnded("On a call on your phone")
+            default: hud.callEnded()
             }
         default:
             break

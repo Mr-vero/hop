@@ -6,10 +6,12 @@ import Foundation
 /// Only the paired phone is recognised: its signal carries a token derived from the pairing key that
 /// changes every 5 minutes.
 @MainActor
-final class NearSensor: NSObject, CBCentralManagerDelegate {
+final class NearSensor: NSObject, CBCentralManagerDelegate, CBPeripheralManagerDelegate {
     enum Zone { case far, near }
 
     static let service = CBUUID(string: "6B0F1E52-8D3A-4C7B-9E21-5A4F3C2D1B0E")
+    /** The Mac's own signal, which the phone listens for to judge the distance itself (NearScanner.kt). */
+    static let macService = CBUUID(string: "6B0F1E53-8D3A-4C7B-9E21-5A4F3C2D1B0E")
 
     var onZone: (Zone) -> Void = { _ in }
     var onSignal: (Double?) -> Void = { _ in }
@@ -26,6 +28,12 @@ final class NearSensor: NSObject, CBCentralManagerDelegate {
 
     private var key = Data()
     private var central: CBCentralManager?
+    private var peripheral: CBPeripheralManager?
+    private var advertisedWindow: Int64 = -1
+    /** The phone's own signed verdict (from its packets or the Hop link) and when it last said so. */
+    private var phoneVerdict: (near: Bool, at: Date)?
+    /** The phone's measurement of the Mac's signal, for the menu readout. */
+    private(set) var phoneRSSI: Int?
     private var lastHeard = Date.distantPast
     private var pending: (zone: Zone, since: Date)?
     /** Recent readings (time, dBm). */
@@ -41,6 +49,7 @@ final class NearSensor: NSObject, CBCentralManagerDelegate {
         self.key = key
         guard central == nil else { return }
         central = CBCentralManager(delegate: self, queue: .main)
+        peripheral = CBPeripheralManager(delegate: self, queue: .main)
         timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
         }
@@ -49,6 +58,11 @@ final class NearSensor: NSObject, CBCentralManagerDelegate {
     func stop() {
         central?.stopScan()
         central = nil
+        peripheral?.stopAdvertising()
+        peripheral = nil
+        advertisedWindow = -1
+        phoneVerdict = nil
+        phoneRSSI = nil
         timer?.invalidate()
         timer = nil
         rssi = nil
@@ -71,6 +85,35 @@ final class NearSensor: NSObject, CBCentralManagerDelegate {
         }
     }
 
+    nonisolated func peripheralManagerDidUpdateState(_ peripheral: CBPeripheralManager) {
+        MainActor.assumeIsolated { advertise() }
+    }
+
+    /// Sends the Mac's own small signal, named with a token from the pairing key that changes every 5 minutes.
+    private func advertise() {
+        guard let peripheral, peripheral.state == .poweredOn else { return }
+        let window = Int64(Date().timeIntervalSince1970) / 300
+        guard window != advertisedWindow else { return }
+        advertisedWindow = window
+        peripheral.stopAdvertising()
+        peripheral.startAdvertising([CBAdvertisementDataServiceUUIDsKey: [Self.macService],
+                                     CBAdvertisementDataLocalNameKey: Self.macName(key: key, window: window)])
+    }
+
+    /// "H" plus the first 6 hex digits of the Mac's token, the same as NearScanner.macName on the phone.
+    /// Short enough to fit in one Bluetooth packet beside the service ID (longer names get cut off).
+    static func macName(key: Data, window: Int64) -> String {
+        "H" + token(key: key, label: "hop-mac", window: window).map { String(format: "%02x", $0) }.joined().prefix(6)
+    }
+
+    /// The phone's verdict over the Hop link: instant, and authenticated by the link's encryption.
+    func phoneSaid(near: Bool?, rssi: Int?) {
+        phoneVerdict = near.map { ($0, Date()) }
+        phoneRSSI = rssi == 0 ? nil : rssi
+        evaluate()
+        onSignal(self.rssi)
+    }
+
     nonisolated func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral,
                                     advertisementData: [String: Any], rssi RSSI: NSNumber) {
         let maker = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data
@@ -83,28 +126,38 @@ final class NearSensor: NSObject, CBCentralManagerDelegate {
         guard let maker, maker.count == 8, maker.first == 0xFF, maker.dropFirst().first == 0xFF else { return }
         heardAny += 1
         lastData = maker.map { String(format: "%02x", $0) }.joined() + " @\(Int(value))"
-        guard value < 0, value > -110,
-              isOurPhone(token: maker.suffix(6)) else { return }
+        guard value < 0, value > -110, let flag = ourPhone(token: maker.suffix(6)) else { return }
+        // Packets from a phone that judges distance itself carry its verdict, sealed with the pairing key
+        if flag != 0 { phoneVerdict = (flag == 1, Date()) }
         lastHeard = Date()
         heardOurs += 1
         samples.append((Date(), value))
         filter()
     }
 
-    private func isOurPhone(token: Data) -> Bool {
+    /// nil if it isn't our phone; otherwise 0 (no verdict), 1 (near) or 2 (away).
+    private func ourPhone(token: Data) -> UInt8? {
         let window = Int64(Date().timeIntervalSince1970) / 300
-        return (window - 1...window + 1).contains { Self.token(key: key, window: $0) == token }
+        for w in window - 1...window + 1 {
+            for flag: UInt8? in [nil, 1, 2] where Self.token(key: key, label: "hop-near", window: w, flag: flag) == token {
+                return flag ?? 0
+            }
+        }
+        return nil
     }
 
-    static func token(key: Data, window: Int64) -> Data {
-        var msg = Data("hop-near".utf8)
+    /// First 6 bytes of HMAC-SHA256(pairingKey, label || window [|| flag]), the same as NearCrypto.token on the phone.
+    static func token(key: Data, label: String, window: Int64, flag: UInt8? = nil) -> Data {
+        var msg = Data(label.utf8)
         withUnsafeBytes(of: window.bigEndian) { msg.append(contentsOf: $0) }
+        if let flag { msg.append(flag) }
         return Data(HMAC<SHA256>.authenticationCode(for: msg, using: SymmetricKey(data: key)).prefix(6))
     }
 
     // MARK: zones
 
     private func tick() {
+        advertise() // picks up the next token when the 5-minute window turns over
         filter()
         evaluate()
         onSignal(rssi)
@@ -131,13 +184,20 @@ final class NearSensor: NSObject, CBCentralManagerDelegate {
         let state = central.map { "\($0.state.rawValue)" } ?? "none"
         let auth = CBManager.authorization.rawValue
         let text = "bluetooth=\(state) (5=on) auth=\(auth) (3=allowed) scanning=\(central?.isScanning ?? false) " +
-            "heard=\(heardAny) ours=\(heardOurs) rssi=\(rssi.map { String(Int($0)) } ?? "-") zone=\(zone) last=\(lastData)\n"
+            "heard=\(heardAny) ours=\(heardOurs) rssi=\(rssi.map { String(Int($0)) } ?? "-") zone=\(zone) " +
+            "advertising=\(peripheral?.isAdvertising ?? false) phone=\(phoneVerdict.map { "\($0.near ? "near" : "away") \(Int(-$0.at.timeIntervalSinceNow))s ago" } ?? "-") phoneRSSI=\(phoneRSSI.map(String.init) ?? "-")\n"
         let file = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Hop/near-status.txt")
         try? text.write(to: file, atomically: true, encoding: .utf8)
     }
 
     private func evaluate() {
+        // The phone's own verdict wins while it's fresh: it hears the Mac far better than the Mac hears it,
+        // and it has already smoothed the readings, so act on it straight away
+        if let v = phoneVerdict, Date().timeIntervalSince(v.at) < 15 {
+            set(v.near ? .near : .far)
+            return
+        }
         let target = targetZone()
         guard target != zone else { pending = nil; return }
         if pending?.zone != target { pending = (target, Date()) }

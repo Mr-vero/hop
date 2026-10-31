@@ -14,7 +14,11 @@ final class PhoneStream {
         /** Dock mode: the phone opens a separate desktop-sized display (e.g. "1920x1200/200") and streams that
             instead of its own screen, which stays usable on the phone. */
         var newDisplay: String? = nil
+        /** No picture or sound: a quiet background connection that keeps the clipboards in sync. */
+        var controlOnly = false
     }
+
+    var serial: String { config.serial }
 
     /// Called on the main queue.
     var onFormat: (CMVideoFormatDescription, CGSize) -> Void = { _, _ in }
@@ -41,9 +45,14 @@ final class PhoneStream {
         Thread.detachNewThread { [self] in
             do {
                 try connect()
-                Thread.detachNewThread { [self] in runVideo() }
-                Thread.detachNewThread { [self] in runAudio() }
-                Thread.detachNewThread { [self] in runControlReader() }
+                if !config.controlOnly {
+                    Thread.detachNewThread { [self] in runVideo() }
+                    Thread.detachNewThread { [self] in runAudio() }
+                }
+                Thread.detachNewThread { [self] in
+                    runControlReader()
+                    if config.controlOnly { finish(stopped ? nil : "The phone disconnected.") }
+                }
             } catch {
                 finish("Couldn't start the phone screen (\(error)).")
             }
@@ -82,14 +91,20 @@ final class PhoneStream {
 
         let p = Process()
         p.executableURL = URL(fileURLWithPath: adb)
-        // Over Wi-Fi (often shared and busy) a smaller, steadier stream feels faster than a sharp, stuttering one
-        // Uncompressed sound alone is 1.5 Mbps, so over Wi-Fi it stays on the phone (which is right beside the Mac)
-        var options = ["video_bit_rate=\(config.wireless ? 2_500_000 : 16_000_000)", "max_fps=60"]
-        options += config.wireless ? ["audio=false"] : ["audio_codec=raw"]
-        if let display = config.newDisplay {
-            options += ["new_display=\(display)", "max_size=\(config.wireless ? 1600 : 0)", "stay_awake=false", "power_off_on_close=false"]
+        let options: [String]
+        if config.controlOnly {
+            options = ["video=false", "audio=false", "stay_awake=false", "power_off_on_close=false"]
         } else {
-            options += ["max_size=\(config.wireless ? 1280 : 2340)", "stay_awake=true", "power_off_on_close=true"]
+            // Over Wi-Fi (often shared and busy) a smaller, steadier stream feels faster than a sharp, stuttering one,
+            // and uncompressed sound alone is 1.5 Mbps, so it stays on the phone (which is right beside the Mac)
+            var o = ["video_bit_rate=\(config.wireless ? 2_500_000 : 16_000_000)", "max_fps=60"]
+            o += config.wireless ? ["audio=false"] : ["audio_codec=raw"]
+            if let display = config.newDisplay {
+                o += ["new_display=\(display)", "max_size=\(config.wireless ? 1600 : 0)", "stay_awake=false", "power_off_on_close=false"]
+            } else {
+                o += ["max_size=\(config.wireless ? 1280 : 2340)", "stay_awake=true", "power_off_on_close=true"]
+            }
+            options = o
         }
         p.arguments = ["-s", serial, "shell", "CLASSPATH=/data/local/tmp/scrcpy-server.jar", "app_process", "/",
                        "com.genymobile.scrcpy.Server", config.serverVersion,
@@ -106,6 +121,12 @@ final class PhoneStream {
             if let s = try? BlockingSocket(port: port), (try? s.read(1)) != nil { first = s } else { Thread.sleep(forTimeInterval: 0.1) }
         }
         guard let v = first else { throw StreamError.timeout }
+        if config.controlOnly {
+            // A single socket in this mode, which carries the device name first
+            control = v
+            _ = try v.read(64)
+            return
+        }
         video = v
         if !config.wireless { audio = try BlockingSocket(port: port) } // no sound socket over Wi-Fi
         control = try BlockingSocket(port: port)
@@ -288,6 +309,17 @@ final class PhoneStream {
         m.appendBE(UInt32(utf8.count))
         m.append(utf8)
         send(m)
+    }
+
+    /// Copies files straight to the phone's Downloads/Hop over the debugging connection (no Hop link needed).
+    func push(_ urls: [URL]) {
+        let adb = config.adb, serial = config.serial
+        DispatchQueue.global().async {
+            _ = try? Self.run(adb, ["-s", serial, "shell", "mkdir", "-p", "/sdcard/Download/Hop"])
+            for url in urls where !url.hasDirectoryPath {
+                _ = try? Self.run(adb, ["-s", serial, "push", url.path, "/sdcard/Download/Hop/"])
+            }
+        }
     }
 
     func expandNotifications() { send(Data([5])) }

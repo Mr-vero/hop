@@ -37,6 +37,7 @@ import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.Switch
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.runtime.Composable
@@ -44,6 +45,8 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -99,7 +102,13 @@ class MainActivity : ComponentActivity() {
         var resumes by remember { mutableIntStateOf(0) }
         LifecycleResumeEffect(Unit) { resumes++; HopLink.poke(); onPauseOrDispose { } }
         val notifPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { resumes++ }
-        val nearPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { resumes++; HopLink.nearChanged() }
+        val nearPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { resumes++; HopLink.nearChanged() }
+        // Already allowed to send the near signal from an older version: the listening half comes along without a prompt
+        LaunchedEffect(Unit) {
+            if (NearBeacon.allowed(this@MainActivity) && !NearScanner.allowed(this@MainActivity)) {
+                nearPermission.launch(arrayOf(Manifest.permission.BLUETOOTH_ADVERTISE, Manifest.permission.BLUETOOTH_SCAN))
+            }
+        }
 
         Column(
             Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface).safeDrawingPadding()
@@ -127,11 +136,18 @@ class MainActivity : ComponentActivity() {
                 Text("Set up", fontWeight = FontWeight.SemiBold, fontSize = 18.sp, modifier = Modifier.padding(top = 10.dp))
                 val listenerOn = NotificationManagerCompat.getEnabledListenerPackages(this@MainActivity).contains(packageName)
                 SetupRow(
-                    "Codes to Mac", "Spots one-time codes in your notifications and copies just the code on your Mac. Nothing else is sent.",
+                    "Codes & notifications to Mac", "Copies one-time codes on your Mac and shows your notifications there, where you can reply. Turn notifications off below if you only want codes.",
                     done = listenerOn, action = "Allow",
                 ) {
                     startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_DETAIL_SETTINGS)
                         .putExtra(Settings.EXTRA_NOTIFICATION_LISTENER_COMPONENT_NAME, ComponentName(this@MainActivity, OtpListener::class.java).flattenToString()))
+                }
+                if (listenerOn) {
+                    var notifyMac by remember { mutableStateOf(NotifBridge.enabled(this@MainActivity)) }
+                    ToggleRow("Show notifications on Mac", "Messages and alerts appear in the island at the top of your Mac's screen.", notifyMac) {
+                        notifyMac = it
+                        NotifBridge.setEnabled(this@MainActivity, it)
+                    }
                 }
                 // Android hides codes inside notifications from Hop, so SMS is how bank codes get through
                 val smsOn = ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.RECEIVE_SMS) == PackageManager.PERMISSION_GRANTED
@@ -143,11 +159,15 @@ class MainActivity : ComponentActivity() {
                 SetupRow("Alerts from Mac", "Lets you know when a file or link arrives from your Mac.", done = notifOn, action = "Allow") {
                     notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
                 }
-                val nearOn = NearBeacon.allowed(this@MainActivity)
+                val nearOn = NearBeacon.allowed(this@MainActivity) && NearScanner.allowed(this@MainActivity)
                 SetupRow(
                     "Near your Mac", "Bring the phone close to your Mac and it appears on the Mac's screen. Uses a private Bluetooth signal only your Mac recognises.",
                     done = nearOn, action = "Allow",
-                ) { nearPermission.launch(Manifest.permission.BLUETOOTH_ADVERTISE) }
+                ) { nearPermission.launch(arrayOf(Manifest.permission.BLUETOOTH_ADVERTISE, Manifest.permission.BLUETOOTH_SCAN)) }
+                SetupRow(
+                    "Calls on Mac", "Answer or decline incoming calls from your Mac. You still talk on the phone.",
+                    done = NotifBridge.callsAllowed(this@MainActivity), action = "Allow",
+                ) { notifPermission.launch(Manifest.permission.ANSWER_PHONE_CALLS) }
                 SetupRow("Quick Settings tile", "One tap in the pull-down panel sends your clipboard to the Mac.", done = false, action = "Add") {
                     getSystemService(StatusBarManager::class.java).requestAddTileService(
                         ComponentName(this@MainActivity, ClipTile::class.java), "Send to Mac",
@@ -182,6 +202,20 @@ class MainActivity : ComponentActivity() {
                 Text(title, fontWeight = FontWeight.SemiBold, fontSize = 18.sp)
                 Text(sub, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
             }
+        }
+    }
+
+    @Composable
+    private fun ToggleRow(title: String, body: String, on: Boolean, onChange: (Boolean) -> Unit) {
+        Row(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(MaterialTheme.colorScheme.surfaceContainer).padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(title, fontWeight = FontWeight.Medium, fontSize = 16.sp)
+                Text(body, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+            }
+            Switch(checked = on, onCheckedChange = onChange, modifier = Modifier.padding(start = 12.dp))
         }
     }
 

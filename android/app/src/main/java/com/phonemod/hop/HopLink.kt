@@ -162,6 +162,7 @@ object HopLink {
             if (hello.optString("t") != "hello") throw IOException("bad hello")
             if (host != pairing.host || port != pairing.port) pairing.withAddress(app, host, port)
             _state.value = LinkState.Connected(hello.optString("name", pairing.macName))
+            scope.launch { delay(300); PhoneStatus.report(true); NearScanner.announce() }
             // We ping every 2 minutes and the Mac answers, so silence for 5 means the link is dead
             s.soTimeout = 300_000
 
@@ -222,6 +223,12 @@ object HopLink {
                 progress(sent.toFloat() / size.coerceAtLeast(1))
             }
         }
+    }
+
+    /** Sends right away if connected, otherwise drops it (for live updates that are only useful now). */
+    fun sendNow(obj: JSONObject) {
+        if (_state.value !is LinkState.Connected) return
+        scope.launch { runCatching { writeLock.withLock { writeJson(obj) } }.onFailure { socket?.close() } }
     }
 
     private suspend fun send(block: () -> Unit): Boolean {

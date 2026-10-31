@@ -19,6 +19,8 @@ final class Mirror {
     var onFailed: () -> Void = {}
     /** The user closed the window themselves. */
     var onUserClosed: () -> Void = {}
+    /** Files dropped onto the phone window, with that window's connection (to copy over directly if needed). */
+    var onDropFiles: ([URL], PhoneStream) -> Void = { _, _ in }
 
     static var isInstalled: Bool { serverJar != nil }
 
@@ -34,11 +36,12 @@ final class Mirror {
 
     /// A connection to the phone (not started yet). `phoneIP` is the address of the phone's Hop
     /// connection, used when there's no cable.
-    static func openStream(phoneIP: String?, newDisplay: String? = nil) async throws -> PhoneStream {
+    static func openStream(phoneIP: String?, newDisplay: String? = nil, controlOnly: Bool = false) async throws -> PhoneStream {
         guard let jar = serverJar else { throw Failure.notInstalled }
-        let serial = try await findPhone(phoneIP: phoneIP)
+        // A background connection never restarts the phone's adb (which would cut off an open phone window)
+        let serial = try await findPhone(phoneIP: phoneIP, setUpWireless: !controlOnly)
         return PhoneStream(config: .init(serial: serial, adb: "\(brew)/adb", serverJar: jar.path, serverVersion: jar.version,
-                                         wireless: serial.contains(":"), newDisplay: newDisplay))
+                                         wireless: serial.contains(":"), newDisplay: newDisplay, controlOnly: controlOnly))
     }
 
     /// Shows the phone in Hop's phone-shaped window, or with `dock` its desktop in a big Mac window.
@@ -57,6 +60,10 @@ final class Mirror {
             self.onChange()
         }
         w.onShown = { [weak self] in self?.onShown(); self?.onChange() }
+        w.onDropFiles = { [weak self, weak stream] urls in
+            guard let self, let stream else { return }
+            self.onDropFiles(urls, stream)
+        }
         stream.onEnded = { [weak w] _ in w?.close() }
         stream.start()
         window = w
@@ -84,7 +91,7 @@ final class Mirror {
 
     // MARK: adb
 
-    private static func findPhone(phoneIP: String?) async throws -> String {
+    private static func findPhone(phoneIP: String?, setUpWireless: Bool = true) async throws -> String {
         let devices = try await adb(["devices"])
             .split(separator: "\n").dropFirst()
             .compactMap { line -> String? in
@@ -94,7 +101,7 @@ final class Mirror {
         if let usb = devices.first(where: { !$0.contains(":") }) {
             // While the cable is in, switch on wireless debugging so next time works without it
             // (it stays on until the phone restarts). This briefly restarts adb on the phone.
-            if let ip = phoneIP, !devices.contains("\(ip):5555") {
+            if setUpWireless, let ip = phoneIP, !devices.contains("\(ip):5555") {
                 _ = try? await adb(["-s", usb, "tcpip", "5555"])
                 try? await Task.sleep(for: .seconds(2))
                 _ = try? await adb(["connect", "\(ip):5555"])

@@ -34,6 +34,20 @@ class Inbox(private val ctx: Context) {
                 when (msg.optString("t")) {
                     "text" -> text(msg.optString("text"))
                     "file" -> startFile(msg.optString("name", "file"), msg.optLong("size"))
+                    // Universal clipboard from the Mac: quietly replaces the phone's clipboard
+                    "clip" -> msg.optString("text").takeIf { it.isNotEmpty() }?.let {
+                        ctx.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("Hop", it))
+                    }
+                    "notif-reply" -> NotifBridge.reply(ctx, msg.optString("id"), msg.optString("text"))
+                    "notif-dismiss" -> NotifBridge.dismiss(msg.optString("id"))
+                    "call-answer" -> NotifBridge.answer(ctx)
+                    "call-decline" -> NotifBridge.decline(ctx)
+                    "ring" -> Ringer.ring(ctx)
+                    "ring-stop" -> Ringer.stop(ctx)
+                    "near-calibrate" -> {
+                        val r = NearScanner.calibrate(ctx)
+                        HopLink.sendNow(JSONObject().put("t", "near-calibrated").put("ok", r != null).put("rssi", r ?: 0))
+                    }
                 }
             }
         } finally {

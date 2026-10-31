@@ -1,23 +1,88 @@
 import AppKit
 
-/// An iPhone-style "island" at the top centre of the screen that says what the phone connection is doing:
-/// connecting, connected, moved away, or what went wrong. On a MacBook with a notch it grows out of the
-/// notch and shrinks back into it; elsewhere it drops in just below the top edge.
+/// An iPhone-style "island" at the top centre of the screen. It says what the phone connection is doing
+/// (connecting, connected, moved away, what went wrong), shows the phone's notifications (with reply) and
+/// incoming calls (answer or decline). On a MacBook with a notch it grows out of the notch and shrinks back
+/// into it; elsewhere it drops in just below the top edge.
 @MainActor
 final class ConnectHUD {
     enum Style { case working, done, info }
+    private enum Mode: Equatable { case status, notification(String), call }
 
-    private var panel: NSPanel?
+    private var panel: IslandPanel?
     private let island = IslandView()
     private var hideTask: Task<Void, Never>?
+    private var mode = Mode.status
+    private var hovering = false
 
     func show(_ text: String, style: Style, hideAfter: TimeInterval? = nil) {
+        // A ringing call keeps the island until it's answered, declined or over
+        if mode == .call, panel?.isVisible == true { return }
+        mode = .status
+        island.set(text: text, style: style)
+        present(width: island.preferredWidth, interactive: false, hideAfter: hideAfter)
+    }
+
+    /// A phone notification, with Reply when the app allows it. Stays while hovered or replying.
+    func showNotification(id: String, app: String, title: String, text: String, icon: NSImage?, canReply: Bool,
+                          onReply: @escaping (String) -> Void, onDismiss: @escaping () -> Void) {
+        if mode == .call, panel?.isVisible == true { return }
+        mode = .notification(id)
+        let card = NotificationCard(app: app, title: title, text: text, icon: icon, canReply: canReply)
+        card.onReply = { [weak self] reply in
+            onReply(reply)
+            self?.mode = .status
+            self?.show("Reply sent", style: .done, hideAfter: 1.2)
+        }
+        card.onDismiss = { [weak self] in onDismiss(); self?.hide() }
+        card.onClose = { [weak self] in self?.hide() }
+        card.onHover = { [weak self] inside in
+            guard let self else { return }
+            hovering = inside
+            if inside { hideTask?.cancel() } else if !card.replying { scheduleHide(after: 3) }
+        }
+        card.onReplying = { [weak self] in self?.hideTask?.cancel(); self?.panel?.makeKey() }
+        island.setCard(card, height: NotificationCard.height, theme: .accent)
+        present(width: NotificationCard.width, interactive: true, hideAfter: 6)
+    }
+
+    /// Takes the notification away if it's still showing (it was opened or dismissed on the phone).
+    func removeNotification(id: String) {
+        if mode == .notification(id), panel?.isVisible == true { hide() }
+    }
+
+    func showCall(name: String, detail: String, onAnswer: @escaping () -> Void, onDecline: @escaping () -> Void) {
+        mode = .call
+        let card = CallCard(name: name, detail: detail)
+        card.onAnswer = { [weak self] in onAnswer(); self?.callEnded("Answered on your phone") }
+        card.onDecline = { [weak self] in onDecline(); self?.callEnded("Declined") }
+        island.setCard(card, height: CallCard.height, theme: .call)
+        present(width: CallCard.width, interactive: true, hideAfter: nil)
+    }
+
+    func callEnded(_ text: String? = nil) {
+        guard mode == .call else { return }
+        mode = .status
+        if let text { show(text, style: .info, hideAfter: 1.5) } else { hide() }
+    }
+
+    private func scheduleHide(after seconds: TimeInterval) {
+        hideTask?.cancel()
+        hideTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(seconds))
+            guard !Task.isCancelled, let self, !self.hovering else { return }
+            self.hide()
+        }
+    }
+
+    private func present(width: CGFloat, interactive: Bool, hideAfter: TimeInterval?) {
         hideTask?.cancel()
         let panel = self.panel ?? makePanel()
-        island.set(text: text, style: style)
-        let expanded = Self.frame(width: island.preferredWidth, expanded: true)
+        panel.interactive = interactive
+        panel.ignoresMouseEvents = !interactive
+        let expanded = Self.frame(width: width, height: island.contentHeight, expanded: true)
         if !panel.isVisible {
-            panel.setFrame(Self.frame(width: 0, expanded: false), display: false)
+            panel.setFrame(Self.frame(width: 0, height: 0, expanded: false), display: false)
             panel.alphaValue = Self.notch == nil ? 0 : 1 // from the notch it simply grows; elsewhere it fades in
             island.contentAlpha = 0
             panel.orderFrontRegardless()
@@ -32,21 +97,19 @@ final class ConnectHUD {
             ctx.duration = 0.25
             island.animator().contentAlpha = 1
         }
-        if let hideAfter {
-            hideTask = Task { [weak self] in
-                try? await Task.sleep(for: .seconds(hideAfter))
-                if !Task.isCancelled { self?.hide() }
-            }
-        }
+        if let hideAfter { scheduleHide(after: hideAfter) }
     }
 
     func hide() {
         hideTask?.cancel()
+        hovering = false
+        if mode != .call { mode = .status }
         guard let panel, panel.isVisible else { return }
+        panel.ignoresMouseEvents = true
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.35
             ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.4, 0, 0.2, 1)
-            panel.animator().setFrame(Self.frame(width: 0, expanded: false), display: true)
+            panel.animator().setFrame(Self.frame(width: 0, height: 0, expanded: false), display: true)
             island.animator().contentAlpha = 0
             if Self.notch == nil { panel.animator().alphaValue = 0 }
         }, completionHandler: { [weak panel] in
@@ -71,14 +134,14 @@ final class ConnectHUD {
         return CGSize(width: s.frame.width - left.width - right.width, height: s.safeAreaInsets.top)
     }
 
-    private static func frame(width: CGFloat, expanded: Bool) -> NSRect {
+    private static func frame(width: CGFloat, height: CGFloat, expanded: Bool) -> NSRect {
         let f = screen.frame
         let notch = notch
         let top = notch?.height ?? 0       // the part hidden behind the notch
         let w: CGFloat, h: CGFloat
         if expanded {
             w = max(width, (notch?.width ?? 0) + 40)
-            h = top + IslandView.contentHeight
+            h = top + height
         } else {
             w = notch?.width ?? 120
             h = notch?.height ?? 8
@@ -87,8 +150,8 @@ final class ConnectHUD {
         return NSRect(x: f.midX - w / 2, y: y, width: w, height: h)
     }
 
-    private func makePanel() -> NSPanel {
-        let p = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    private func makePanel() -> IslandPanel {
+        let p = IslandPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         p.level = .statusBar // above the menu bar, so it can sit in the notch
         p.isOpaque = false
         p.backgroundColor = .clear
@@ -103,10 +166,20 @@ final class ConnectHUD {
     }
 }
 
+/// Can take keyboard focus (for typing a reply) without bringing Hop to the front.
+@MainActor
+private final class IslandPanel: NSPanel {
+    var interactive = false
+    override var canBecomeKey: Bool { interactive }
+}
+
 /// The black pill itself: icon, message and a spinner or tick, laid out along its bottom edge.
 @MainActor
 private final class IslandView: NSView {
-    static let contentHeight: CGFloat = 40
+    enum Theme { case accent, green, call }
+    /** Height of the visible part below the notch. */
+    private(set) var contentHeight: CGFloat = 40
+    private var card: NSView?
     var flushTop = true { didSet { needsLayout = true } }
     private let icon = NSImageView()
     private let label = NSTextField(labelWithString: "")
@@ -116,7 +189,7 @@ private final class IslandView: NSView {
     private var textWidth: CGFloat = 0
 
     @objc dynamic var contentAlpha: CGFloat = 1 {
-        didSet { [icon, label, spinner, tick].forEach { $0.alphaValue = contentAlpha } }
+        didSet { ([icon, label, spinner, tick] + [card].compactMap { $0 }).forEach { $0.alphaValue = contentAlpha } }
     }
 
     override static func defaultAnimation(forKey key: NSAnimatablePropertyKey) -> Any? {
@@ -164,20 +237,42 @@ private final class IslandView: NSView {
 
     required init?(coder: NSCoder) { fatalError() }
 
+    /// Replaces the status line with a richer card (a notification or a call).
+    func setCard(_ view: NSView, height: CGFloat, theme: Theme) {
+        card?.removeFromSuperview()
+        card = view
+        contentHeight = height
+        addSubview(view)
+        [icon, label, spinner, tick].forEach { $0.isHidden = true }
+        setColors(theme == .call ? Self.green : Self.accent)
+        sweep.removeAnimation(forKey: "spin")
+        if theme == .call { spinEdge(duration: 1.4) }
+        icon.layer?.removeAnimation(forKey: "breathe")
+        needsLayout = true
+    }
+
+    private static let green = [NSColor.systemGreen, NSColor(srgbRed: 0.2, green: 0.9, blue: 0.6, alpha: 1), NSColor.systemGreen]
+
+    private func spinEdge(duration: CFTimeInterval) {
+        let spin = CABasicAnimation(keyPath: "transform.rotation.z")
+        spin.fromValue = 0
+        spin.toValue = -2 * Double.pi
+        spin.duration = duration
+        spin.repeatCount = .infinity
+        sweep.add(spin, forKey: "spin")
+    }
+
     func set(text: String, style: ConnectHUD.Style) {
+        card?.removeFromSuperview()
+        card = nil
+        contentHeight = 40
+        [icon, label].forEach { $0.isHidden = false }
         label.stringValue = text
         textWidth = ceil((text as NSString).size(withAttributes: [.font: label.font!]).width) + 4
         // Connecting: the edge sweeps round. Connected: it settles into green. Otherwise: Hop's colours, still.
-        setColors(style == .done ? [.systemGreen, NSColor(srgbRed: 0.2, green: 0.9, blue: 0.6, alpha: 1), .systemGreen] : Self.accent)
+        setColors(style == .done ? Self.green : Self.accent)
         sweep.removeAnimation(forKey: "spin")
-        if style == .working {
-            let spin = CABasicAnimation(keyPath: "transform.rotation.z")
-            spin.fromValue = 0
-            spin.toValue = -2 * Double.pi
-            spin.duration = 2.2
-            spin.repeatCount = .infinity
-            sweep.add(spin, forKey: "spin")
-        }
+        if style == .working { spinEdge(duration: 2.2) }
         icon.layer?.removeAnimation(forKey: "breathe")
         if style == .working {
             let breathe = CABasicAnimation(keyPath: "opacity")
@@ -206,9 +301,9 @@ private final class IslandView: NSView {
 
     override func layout() {
         super.layout()
-        let h = Self.contentHeight
+        let h = contentHeight
         // Rounded at the bottom; flush with the top edge when hanging from the notch
-        layer?.cornerRadius = min(bounds.height, h) / 2
+        layer?.cornerRadius = min(bounds.height, min(h, 44)) / 2
         layer?.maskedCorners = flushTop ? [.layerMinXMinYCorner, .layerMaxXMinYCorner] : [.layerMinXMinYCorner, .layerMaxXMinYCorner, .layerMinXMaxYCorner, .layerMaxXMaxYCorner]
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -220,6 +315,7 @@ private final class IslandView: NSView {
         edgeShape.frame = bounds
         edgeShape.path = edgePath()
         CATransaction.commit()
+        card?.frame = NSRect(x: 0, y: 0, width: bounds.width, height: h)
         let textW = min(textWidth, 320, max(0, bounds.width - 96))
         let contentW = 22 + 10 + textW + 10 + 18
         var x = (bounds.width - contentW) / 2
@@ -234,7 +330,7 @@ private final class IslandView: NSView {
     private func edgePath() -> CGPath {
         let inset = edgeShape.lineWidth / 2
         let b = bounds.insetBy(dx: inset, dy: inset)
-        let r = min(Self.contentHeight / 2, b.height / 2) - inset
+        let r = min(min(contentHeight, 44) / 2, b.height / 2) - inset
         guard flushTop else { return CGPath(roundedRect: b, cornerWidth: r, cornerHeight: r, transform: nil) }
         let p = CGMutablePath()
         p.move(to: CGPoint(x: b.minX, y: bounds.maxY))

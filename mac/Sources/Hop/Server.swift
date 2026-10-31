@@ -75,6 +75,14 @@ final class HopServer {
     }
 
     // Outgoing
+    /// Any small message to the phone (clipboard, replies, calls, find my phone…).
+    @discardableResult
+    func sendJSON(_ obj: [String: Any]) -> Bool {
+        guard let s = session else { return false }
+        s.enqueue { try await s.sendJSON(obj) }
+        return true
+    }
+
     func sendText(_ text: String) -> Bool {
         guard let s = session else { return false }
         s.enqueue { try await s.sendJSON(["t": "text", "text": text]) }

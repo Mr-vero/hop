@@ -67,10 +67,18 @@ class OtpListener : NotificationListenerService() {
     override fun onListenerConnected() {
         HopLink.init(this)
         HopLink.poke()
+        NotifBridge.listener = this
     }
+
+    override fun onListenerDisconnected() {
+        if (NotifBridge.listener === this) NotifBridge.listener = null
+    }
+
+    override fun onNotificationRemoved(sbn: StatusBarNotification) = NotifBridge.removed(this, sbn)
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         if (sbn.packageName == packageName) return
+        NotifBridge.posted(this, sbn)
         val n = sbn.notification
         if (n.flags and Notification.FLAG_GROUP_SUMMARY != 0) return
         val title = n.extras.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
