@@ -67,6 +67,15 @@ object NearBeacon {
     private lateinit var app: Context
     /** null: the phone isn't judging distance (no scan permission), 1 near, 2 away. */
     @Volatile private var flag: Byte? = null
+    /** Fast while the Mac is around; a slow trickle otherwise, so it costs next to nothing away from the desk. */
+    @Volatile private var fast = false
+
+    @Synchronized
+    fun setFast(on: Boolean) {
+        if (on == fast) return
+        fast = on
+        if (job?.isActive == true) advertise()
+    }
 
     fun allowed(ctx: Context) =
         ContextCompat.checkSelfPermission(ctx, Manifest.permission.BLUETOOTH_ADVERTISE) == PackageManager.PERMISSION_GRANTED
@@ -116,8 +125,8 @@ object NearBeacon {
             val adv = adapter.bluetoothLeAdvertiser ?: return
             runCatching { advertiser?.stopAdvertising(callback) }
             val settings = AdvertiseSettings.Builder()
-                // ~10 short packets a second: Macs only catch some of them
-                .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
+                // ~10 short packets a second near the Mac (Macs only catch some of them), ~1 a second otherwise
+                .setAdvertiseMode(if (fast) AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY else AdvertiseSettings.ADVERTISE_MODE_LOW_POWER)
                 .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)
                 .setConnectable(false)
                 .build()
@@ -173,6 +182,8 @@ object NearScanner {
     }
 
     private var fastScan = false
+    private var names = emptySet<String>()
+    private var namesWindow = -1L
 
     @Synchronized
     fun start(ctx: Context, key: ByteArray) {
@@ -212,7 +223,9 @@ object NearScanner {
         val key = key ?: return
         val name = r.scanRecord?.deviceName ?: return
         val window = NearCrypto.window()
-        val ok = (window - 1..window + 1).any { macName(key, it) == name }
+        // Worked out once per 5-minute window, not for every packet
+        if (window != namesWindow) { names = (window - 1..window + 1).map { macName(key, it) }.toSet(); namesWindow = window }
+        val ok = name in names
         if (!ok) return
         lastHeard = SystemClock.elapsedRealtime()
         samples.addLast(lastHeard to r.rssi)
@@ -230,7 +243,7 @@ object NearScanner {
         val now = SystemClock.elapsedRealtime()
         // Speed up listening while the Mac is around, slow down a minute after it's gone
         val macAround = lastHeard > 0 && now - lastHeard < 60_000
-        if (macAround != fastScan) scan(macAround)
+        if (macAround != fastScan) { scan(macAround); NearBeacon.setFast(macAround) }
         while (samples.isNotEmpty() && now - samples.first().first > 2_500) samples.removeFirst()
         rssi = if (samples.isEmpty()) {
             if (now - lastHeard > 10_000) null else rssi
@@ -250,7 +263,7 @@ object NearScanner {
                 report(force = true)
             }
         } else pendingSince = 0
-        if (now - lastReport > 5_000) report(force = false)
+        if (now - lastReport > 10_000) report(force = false)
     }
 
     /** Tells a freshly connected Mac where things stand. */

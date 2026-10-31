@@ -20,6 +20,7 @@ class HopApp : Application() {
     override fun onCreate() {
         super.onCreate()
         HopLink.init(this)
+        Ringer.restoreIfInterrupted(this)
     }
 }
 

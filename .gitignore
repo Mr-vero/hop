@@ -18,3 +18,5 @@ android/keystore.properties
 .idea/
 *.iml
 dist/
+promo/promo
+promo/*.mp4

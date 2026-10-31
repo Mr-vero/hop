@@ -254,8 +254,9 @@ object HopLink {
         if (hosts.isEmpty()) return emptyList()
         // Every device that answers on Hop's port, so another one holding it open can't hide the real Mac
         val answered = java.util.concurrent.ConcurrentLinkedQueue<String>()
+        val dispatcher = Dispatchers.IO.limitedParallelism(256) // all of them at once, within the 2 s budget
         val jobs = hosts.map { h ->
-            scope.launch {
+            scope.launch(dispatcher) {
                 runCatching { Socket().use { it.connect(InetSocketAddress(h, port), 600) }; answered.add(h) }
             }
         }

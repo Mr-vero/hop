@@ -55,11 +55,13 @@ final class NearSensor: NSObject, CBCentralManagerDelegate, CBPeripheralManagerD
         timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
         }
+        timer?.tolerance = 0.2
     }
 
     func stop() {
         central?.stopScan()
         central = nil
+        scanningWithDuplicates = nil
         peripheral?.stopAdvertising()
         peripheral = nil
         advertisedWindow = -1
@@ -82,10 +84,23 @@ final class NearSensor: NSObject, CBCentralManagerDelegate, CBPeripheralManagerD
             if central.state == .poweredOn {
                 // No service filter: macOS doesn't reliably match non-connectable adverts against one, so Hop
                 // listens to everything and keeps only adverts carrying our phone's token
-                central.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: true])
+                scan()
             }
             onSignal(rssi)
         }
+    }
+
+    private var scanningWithDuplicates: Bool?
+
+    /// Every packet while the Mac has to measure the distance itself; far fewer once the phone's verdicts decide,
+    /// since every advert nearby (hundreds a second in an office) would otherwise wake Hop.
+    private func scan() {
+        guard let central, central.state == .poweredOn else { return }
+        let fresh = phoneVerdict.map { Date().timeIntervalSince($0.at) < 30 } ?? false
+        guard scanningWithDuplicates != !fresh else { return }
+        scanningWithDuplicates = !fresh
+        central.stopScan()
+        central.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: !fresh])
     }
 
     nonisolated func peripheralManagerDidUpdateState(_ peripheral: CBPeripheralManager) {
@@ -161,6 +176,7 @@ final class NearSensor: NSObject, CBCentralManagerDelegate, CBPeripheralManagerD
 
     private func tick() {
         advertise() // picks up the next token when the 5-minute window turns over
+        scan()
         filter()
         evaluate()
         onSignal(rssi)
@@ -181,6 +197,8 @@ final class NearSensor: NSObject, CBCentralManagerDelegate, CBPeripheralManagerD
         rssi = sorted[min(sorted.count - 1, Int(Double(sorted.count) * 0.75))]
     }
 
+    private var lastStatus = ""
+
     private func writeStatus() {
         guard Date().timeIntervalSince(lastWrite) > 2 else { return }
         lastWrite = Date()
@@ -189,6 +207,10 @@ final class NearSensor: NSObject, CBCentralManagerDelegate, CBPeripheralManagerD
         let text = "bluetooth=\(state) (5=on) auth=\(auth) (3=allowed) scanning=\(central?.isScanning ?? false) " +
             "heard=\(heardAny) ours=\(heardOurs) rssi=\(rssi.map { String(Int($0)) } ?? "-") zone=\(zone) " +
             "advertising=\(peripheral?.isAdvertising ?? false) phone=\(phoneVerdict.map { "\($0.near ? "near" : "away") \(Int(-$0.at.timeIntervalSinceNow))s ago" } ?? "-") phoneRSSI=\(phoneRSSI.map(String.init) ?? "-")\n"
+        // Only written when the state changes (the counters alone don't count)
+        let key = text.replacingOccurrences(of: #"heard=\d+ ours=\d+ "#, with: "", options: .regularExpression)
+        guard key != lastStatus else { return }
+        lastStatus = key
         let file = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Hop/near-status.txt")
         try? text.write(to: file, atomically: true, encoding: .utf8)
@@ -197,11 +219,11 @@ final class NearSensor: NSObject, CBCentralManagerDelegate, CBPeripheralManagerD
     private func evaluate() {
         // The phone's own verdict wins while it's fresh: it hears the Mac far better than the Mac hears it,
         // and it has already smoothed the readings, so act on it straight away
-        if let v = phoneVerdict, Date().timeIntervalSince(v.at) < 15 {
+        if let v = phoneVerdict, Date().timeIntervalSince(v.at) < 30 {
             set(v.near ? .near : .far)
             return
         }
-        if let away = advertAway, Date().timeIntervalSince(away) < 15 {
+        if let away = advertAway, Date().timeIntervalSince(away) < 30 {
             set(.far)
             return
         }

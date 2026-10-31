@@ -32,6 +32,7 @@ final class ClipboardSync {
         timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
         }
+        timer?.tolerance = 0.2
     }
 
     func stop() {
@@ -56,7 +57,8 @@ final class ClipboardSync {
         if types.contains(.init("org.nspasteboard.ConcealedType")) || types.contains(.init("org.nspasteboard.TransientType")) { return }
         guard let text = pb.string(forType: .string), !text.isEmpty, text != lastSynced, text.utf8.count < 100_000 else { return }
         lastSynced = text
-        if let stream { stream.setClipboard(text, paste: false) } else { _ = sendOverLink(text) }
+        // The encrypted Hop link first; the debugging connection (not encrypted over Wi-Fi) only when it's down
+        if !sendOverLink(text) { stream?.setClipboard(text, paste: false) }
     }
 
     private func phoneCopied(_ text: String) {

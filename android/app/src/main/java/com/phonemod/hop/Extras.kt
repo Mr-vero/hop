@@ -178,11 +178,16 @@ object NotifBridge {
         // Quiet notifications stay quiet
         val ranking = NotificationListenerService.Ranking()
         if (svc.currentRanking?.getRanking(sbn.key, ranking) == true && ranking.importance < NotificationManager.IMPORTANCE_DEFAULT) return
-        // Private ones show only their public version, the same as on the phone's lock screen
-        val shown = if (n.visibility == Notification.VISIBILITY_PRIVATE) n.publicVersion else n
+        // Private ones (the default) follow the phone's own lock-screen choice: if it hides sensitive content
+        // there, the Mac gets only the public version too
+        val hideSensitive = runCatching {
+            android.provider.Settings.Secure.getInt(svc.contentResolver, "lock_screen_allow_private_notifications", 1) == 0
+        }.getOrDefault(false)
+        val redact = hideSensitive && n.visibility == Notification.VISIBILITY_PRIVATE
+        val shown = if (redact) n.publicVersion else n
         var title = shown?.extras?.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
         var text = (shown?.extras?.getCharSequence(Notification.EXTRA_BIG_TEXT) ?: shown?.extras?.getCharSequence(Notification.EXTRA_TEXT))?.toString().orEmpty()
-        if (n.visibility == Notification.VISIBILITY_PRIVATE && shown == null) { title = ""; text = "Contents hidden" }
+        if (redact && shown == null) { title = ""; text = "Contents hidden" }
         if (title.isBlank() && text.isBlank()) return
         active[sbn.key] = sbn
         HopLink.sendNow(JSONObject().put("t", "notif").put("id", sbn.key)

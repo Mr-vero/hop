@@ -72,10 +72,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Serv
         }
         clipboard.sendOverLink = { [weak self] text in self?.server.sendJSON(["t": "clip", "text": text]) ?? false }
         clipboard.phoneIP = { [weak self] in self?.verifiedPhoneIP }
-        clipboard.onPhoneCopied = { [weak self] text in
-            let preview = text.count > 40 ? String(text.prefix(40)) + "…" : text
-            self?.hud.show("Copied from phone: \(preview.replacingOccurrences(of: "\n", with: " "))", style: .info, hideAfter: 2)
-        }
+        // No preview of the text: it could be a password copied on the phone
+        clipboard.onPhoneCopied = { [weak self] _ in self?.hud.show("Copied from your phone", style: .info, hideAfter: 1.5) }
         clipboard.start()
         mirror.onUserClosed = { [weak self] in
             guard let self else { return }
@@ -129,6 +127,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Serv
         let header = NSMenuItem(title: recentCodes.isEmpty ? "No codes yet" : "Recent codes (click to copy)", action: nil, keyEquivalent: "")
         header.isEnabled = false
         menu.addItem(header)
+        // Codes are only useful for a little while; don't keep them around
+        recentCodes.removeAll { Date().timeIntervalSince($0.at) > 3600 }
         let ago = RelativeDateTimeFormatter()
         for (i, c) in recentCodes.enumerated() {
             let entry = item("\(c.code)   \(c.from) · \(ago.localizedString(for: c.at, relativeTo: Date()))", #selector(copyRecentCode(_:)), "")
@@ -229,7 +229,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Serv
 
     @objc private func copyRecentCode(_ sender: NSMenuItem) {
         guard recentCodes.indices.contains(sender.tag) else { return }
-        copy(recentCodes[sender.tag].code)
+        copy(recentCodes[sender.tag].code, concealed: true)
     }
 
     @objc private func openNotificationSettings() {
@@ -539,7 +539,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Serv
             guard let code = json["code"] as? String else { return }
             let from = json["from"] as? String ?? "your phone"
             copy(code, concealed: true)
-            notify("Code \(code) copied", "From \(from). Paste it with ⌘V.")
+            // The banner shows the code; it's taken out of Notification Center again when the clipboard is cleared
+            notify("Code \(code) copied", "From \(from). Paste it with ⌘V.", id: "otp")
             recentCodes.insert((code, from, Date()), at: 0)
             recentCodes = Array(recentCodes.prefix(5))
             // Show the code right in the menu bar for a while, so it's visible even without banners
@@ -557,7 +558,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Serv
             otpClearTask?.cancel()
             otpClearTask = Task { @MainActor in
                 try? await Task.sleep(for: .seconds(120))
-                if !Task.isCancelled, NSPasteboard.general.changeCount == stamp { NSPasteboard.general.clearContents() }
+                guard !Task.isCancelled else { return }
+                if NSPasteboard.general.changeCount == stamp { NSPasteboard.general.clearContents() }
+                UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["otp"])
             }
         case "text":
             guard let text = (json["text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return }
@@ -625,6 +628,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Serv
 
     private var receivingPaths: [ObjectIdentifier: URL] = [:]
 
+    func fileAborted(handle: FileHandle) {
+        try? handle.close()
+        if let url = receivingPaths.removeValue(forKey: ObjectIdentifier(self)) { try? FileManager.default.removeItem(at: url) }
+    }
+
     func fileFinished(name: String, handle: FileHandle) {
         try? handle.close()
         guard let url = receivingPaths.removeValue(forKey: ObjectIdentifier(self)) else { return }
@@ -643,12 +651,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Serv
         }
     }
 
-    private func notify(_ title: String, _ body: String, userInfo: [String: String] = [:]) {
+    private func notify(_ title: String, _ body: String, userInfo: [String: String] = [:], id: String = UUID().uuidString) {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
         content.userInfo = userInfo
-        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: id, content: content, trigger: nil))
     }
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {

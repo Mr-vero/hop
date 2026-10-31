@@ -9,6 +9,7 @@ protocol ServerDelegate: AnyObject {
     func received(json: [String: Any])
     func fileStarted(name: String, size: Int64) -> FileHandle?
     func fileFinished(name: String, handle: FileHandle)
+    func fileAborted(handle: FileHandle)
 }
 
 /// Advertises Hop over Bonjour and keeps at most one phone session.
@@ -149,7 +150,9 @@ private final class Session {
         closed = true
         if phoneName == nil { server?.pending -= 1 }
         conn.cancel()
-        try? fileHandle?.close()
+        // A transfer cut off midway leaves no half-written file behind
+        if let h = fileHandle, fileRemaining > 0 { server?.delegate?.fileAborted(handle: h) } else { try? fileHandle?.close() }
+        fileHandle = nil
         server?.sessionClosed(self)
     }
 

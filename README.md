@@ -7,7 +7,7 @@
 <p align="center">
   <b>The Continuity your Android phone never had.</b><br>
   Bring your Android phone near your Mac and it appears on screen. Notifications and calls in the notch, one shared clipboard, files and codes.<br>
-  It connects directly over your Wi-Fi, hotspot or cable, and everything it sends is encrypted. No cloud, no account, no tracking.
+  It connects directly over your Wi-Fi, hotspot or cable, and its link is encrypted end to end. No cloud, no account, no tracking.
 </p>
 
 <p align="center">
@@ -143,7 +143,8 @@ PROTOCOL.md Wire protocol
 ## Privacy
 
 - Nothing touches a server. Hop has no analytics, no crash reporting, no accounts and no cloud relay.
-- Bluetooth signals are signed with the pairing key and change identity every 5 minutes, so they can't be used to follow you. A replayed signal can never open the phone window: that takes the paired phone's verdict over the encrypted link, and an unlocked Mac.
+- Bluetooth signals are signed with the pairing key and change identity every 5 minutes, so they can't be used to follow you, and they carry no personal data. A replayed signal alone can't open the phone window: that takes the paired phone connected over the encrypted link, and an unlocked Mac.
+- Codes, notifications, replies, calls, clipboard text and files all travel over the AES-256-GCM link. The phone window and dock mode use Android's debugging connection instead, which is private over USB but not encrypted over Wi-Fi (see Limitations).
 - Notifications marked secret never leave the phone; private ones show only their lock-screen version. The notch island is hidden from screen sharing and recordings.
 - Only the phone's real dialer can show a call. Phone clipboard changes are announced on the Mac and marked so clipboard managers don't keep them.
 - The phone window and clipboard use wireless debugging only at the address the encrypted link vouches for; otherwise only the USB cable.
