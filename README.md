@@ -6,8 +6,8 @@
 
 <p align="center">
   <b>The Continuity your Android phone never had.</b><br>
-  Verification codes, links, files and your whole phone screen, from your Android phone to your Mac.<br>
-  It connects directly over your Wi-Fi and everything it sends is encrypted. No cloud, no account, no tracking.
+  Bring your Android phone near your Mac and it appears on screen. Notifications and calls in the notch, one shared clipboard, files and codes.<br>
+  It connects directly over your Wi-Fi, hotspot or cable, and everything it sends is encrypted. No cloud, no account, no tracking.
 </p>
 
 <p align="center">
@@ -27,11 +27,14 @@ iPhone owners get AirDrop, auto-filled SMS codes and iPhone Mirroring for free. 
 
 | | |
 |---|---|
-| 🔑 **Codes, instantly** | A verification code arrives by text, and it's **already on your Mac's clipboard**. Just press ⌘V. The code also shows in the menu bar for 30 seconds, and the clipboard clears itself after 2 minutes. |
-| 🔗 **Links & text** | Share → **Send to Mac** → **Send** from any Android app. Links open in your Mac's browser, and anything else is copied. |
-| 📁 **Files, both ways** | Share photos or files from the phone and they land in your Mac's `~/Downloads`. Drag files onto the menu-bar icon (or use *Open With → Hop*) and they land in `Downloads/Hop` on the phone. |
-| 📋 **Clipboard tile** | A Quick Settings tile sends whatever you just copied on the phone to the Mac. |
-| 📱 **Your phone, on your Mac** | **Show Phone Screen** (⌘M) opens your live phone in a phone-shaped window with sound. Click, type, scroll and paste into it. The phone's own screen goes dark while you use it, like iPhone Mirroring. |
+| 📱 **Bring it near, it's on your Mac** | Set the phone beside your Mac and it springs onto the screen in a slim phone window (with a hover toolbar: close, back, home, recents). Walk away and it tucks back into the notch. The phone's own screen goes dark while you use it, like iPhone Mirroring. |
+| 🔔 **Notifications in the notch** | Phone notifications slide out of the notch with the app's icon. **Reply** from the Mac, **dismiss** them, or **click** one to open that chat on the phone, right inside the phone window. |
+| 📞 **Calls** | An incoming call shows the caller in the notch with **Answer** and **Decline**. You still talk on the phone. |
+| 📋 **One clipboard** | Copy on one device, paste on the other. Passwords (copies password managers mark private) are never synced. |
+| 🔑 **Codes, instantly** | A verification code arrives by text and it's **already on your Mac's clipboard**. Press ⌘V. It clears itself after 2 minutes. |
+| 🖥 **Dock mode** | ⌘D opens a full Android desktop (taskbar, app windows) in a resizable Mac window that can go full screen. Your phone stays free to use. |
+| 📁 **Files, both ways** | Drop files onto the phone window or the menu-bar icon, or share from the phone with **Send to Mac**. Links open in your Mac's browser. |
+| 🔋 **At a glance** | Battery, charging and signal in Hop's menu, plus recent codes and **Find My Phone**, which rings it at full volume even on silent. |
 
 ## How it works
 
@@ -50,7 +53,8 @@ iPhone owners get AirDrop, auto-filled SMS codes and iPhone Mirroring for free. 
 
 - **Pairing:** pair once by scanning a QR code. It carries a random 32-byte key that never leaves your two devices.
 - **Encryption:** each connection derives a fresh session key (HMAC-SHA256) and encrypts every frame with AES-256-GCM. Frame counters stop anything being replayed or reordered. The full spec is in [PROTOCOL.md](PROTOCOL.md).
-- **Battery:** the phone only connects while it's on Wi-Fi and sleeps otherwise. There's no polling, just a ping every two minutes.
+- **Near or away:** the Mac sends a small Bluetooth signal named with a token from the pairing key that changes every 5 minutes. The phone measures its strength, decides "near" or "away" itself, and tells the Mac over the encrypted link (a backup copy rides in the phone's own signed signal, which can only ever *close* the window). Fine-tune the distance with **Calibrate Distance…**.
+- **Battery:** the phone listens for the Mac in short bursts, and continuously only while the Mac is in range. The link idles with a ping every two minutes. A quiet notification keeps Hop from being put to sleep.
 - **Mirroring:** a direct client for the [scrcpy](https://github.com/Genymobile/scrcpy) server. It decodes the H.264 stream with VideoToolbox and plays raw PCM audio.
 
 ## Install
@@ -69,22 +73,24 @@ Download both from the **[latest release](../../releases/latest)**.
 1. Download `Hop-android.apk` on the phone and install it. You'll need to allow installs from your browser or file manager.
 2. Open Hop → **Pair with Mac**, then on the Mac choose **Hop menu → Pair Phone…** and scan the code.
 3. Under **Set up**, turn on:
+   - **Codes & notifications to Mac:** shows notifications in the notch and catches codes from apps. If Android says it's a **restricted setting**, open **Settings → Apps → Hop → ⋮ → Allow restricted settings** first. A switch lets you keep notifications off if you only want codes.
    - **Codes from SMS:** Android 15+ hides codes inside notifications from other apps, so Hop reads incoming texts instead. It looks only for the code, and only the code is sent.
-   - **Codes to Mac:** catches codes from apps that show them in notifications.
-   - **Alerts from Mac** and the **Quick Settings tile** are optional.
+   - **Near your Mac:** the private Bluetooth signal (Android calls it "Nearby devices").
+   - **Calls on Mac**, **Alerts from Mac** and the **Quick Settings tile** are optional.
+4. On the Mac, turn on **Show Phone When It's Near** in Hop's menu and allow **Bluetooth** when asked.
 
 > **"Harmful app blocked"?** Google Play Protect warns about any app from outside the Play Store that reads SMS and notifications, because code-stealing malware does the same. Hop's full source is in this repo, so you can check exactly what it does. Tap **More details → Install anyway**.
 >
 > In some countries Google blocks these installs with no override. Install over USB from your Mac instead: turn on **USB debugging**, plug in, and run `adb install Hop-android.apk` (`brew install android-platform-tools` gets you `adb`).
 
-### Phone screen mirroring (optional)
-Mirroring uses Android's debugging bridge, so it needs a one-time setup:
+### Phone on your Mac and dock mode
+These use Android's debugging bridge, so they need a one-time setup:
 1. Install the tools on the Mac:
    ```bash
    brew install scrcpy
    ```
 2. On the phone, turn on **Developer options → USB debugging**. Plug the phone into the Mac and accept the prompt.
-3. Choose **Show Phone Screen** (⌘M). While the cable is in, Hop also switches on wireless debugging, so after that it works over Wi-Fi without the cable until the phone restarts.
+3. Choose **Show Phone Screen** (⌘M). While the cable is in, Hop also switches on wireless debugging, so after that it works over Wi-Fi or the phone's hotspot (while Hop on the phone is connected) until the phone restarts.
 
 | In the phone window | |
 |---|---|
@@ -97,7 +103,8 @@ Mirroring uses Android's debugging bridge, so it needs a one-time setup:
 | ⌘O | Turn the phone's own screen on or off |
 | ⌘+ / ⌘− | Bigger / smaller window |
 | ⌘W | Close (locks the phone) |
-| Hover top-left | × to close |
+| Hover over the phone | Toolbar: close, back, home, recents |
+| Drop files on it | Sends them to the phone's Downloads/Hop |
 
 ## Build from source
 
@@ -127,8 +134,8 @@ The same build can run on GitHub Actions (`.github/workflows/`), started by hand
 
 ### Project layout
 ```
-mac/        Swift package: menu-bar app, server, mirroring (PhoneStream/PhoneWindow)
-android/    Kotlin + Jetpack Compose app: link, OTP detection, share targets, tile
+mac/        Swift package: menu-bar app, link server, near sensor, island, clipboard sync, phone window
+android/    Kotlin + Jetpack Compose app: link, near signals, notifications/calls bridge, codes, share targets
 art/        Icon source (SVG)
 PROTOCOL.md Wire protocol
 ```
@@ -136,6 +143,10 @@ PROTOCOL.md Wire protocol
 ## Privacy
 
 - Nothing touches a server. Hop has no analytics, no crash reporting, no accounts and no cloud relay.
+- Bluetooth signals are signed with the pairing key and change identity every 5 minutes, so they can't be used to follow you. A replayed signal can never open the phone window: that takes the paired phone's verdict over the encrypted link, and an unlocked Mac.
+- Notifications marked secret never leave the phone; private ones show only their lock-screen version. The notch island is hidden from screen sharing and recordings.
+- Only the phone's real dialer can show a call. Phone clipboard changes are announced on the Mac and marked so clipboard managers don't keep them.
+- The phone window and clipboard use wireless debugging only at the address the encrypted link vouches for; otherwise only the USB cable.
 - From texts and notifications, **only the extracted code** (plus the sender's name) is sent, and only to your paired Mac.
 - Shares always ask before sending, so another app can't quietly push links or files to your Mac. Hop never sends its own private files.
 - Files received on the Mac get macOS's download quarantine, so Gatekeeper checks anything runnable before it opens.
@@ -145,9 +156,10 @@ PROTOCOL.md Wire protocol
 
 ## Limitations
 
-- Both devices must be on the same Wi-Fi. Many guest and hotel networks block devices from seeing each other.
+- Both devices must be on the same Wi-Fi (or the Mac on the phone's hotspot). Many guest and hotel networks block devices from seeing each other.
 - Codes that only appear inside app notifications are hidden by Android 15+ unless they also come by SMS.
-- Mirroring needs USB debugging, and wireless mirroring has to be re-enabled with the cable after each phone restart.
+- The phone window needs USB debugging, and wireless use has to be re-enabled with the cable after each phone restart. Android's legacy wireless debugging isn't encrypted, so on untrusted networks prefer the cable or your phone's hotspot.
+- Bluetooth distance is approximate; use **Calibrate Distance…** to suit your desk.
 - Phone-shaped window styling is tuned for Galaxy phones, but any Android 12+ phone works.
 
 ## Credits
