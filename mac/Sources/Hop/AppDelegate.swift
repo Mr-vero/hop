@@ -22,6 +22,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Serv
     /** Closed by hand while the phone was near: don't reopen until the phone has left and come back. */
     private var dismissedWhileNear = false
     private var calibrating = false
+    private var opening = false
+    private var lastOpenAttempt = Date.distantPast
     private var nearItem: NSMenuItem?
     private var nearEnabled: Bool {
         get { UserDefaults.standard.bool(forKey: "nearEnabled") }
@@ -54,9 +56,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Serv
             self.refresh()
         }
         near.onZone = { [weak self] in self?.nearZoneChanged($0) }
-        near.onSignal = { [weak self] _ in self?.nearItem?.title = self?.nearStatus() ?? "" }
-        // `open Hop.app --args --show-phone` opens the phone screen straight away (handy from Terminal)
+        near.onSignal = { [weak self] _ in
+            guard let self else { return }
+            self.nearItem?.title = self.nearStatus()
+            // Still near but nothing showing (e.g. the phone wasn't reachable a moment ago): try again now and then
+            if self.near.zone == .near, Date().timeIntervalSince(self.lastOpenAttempt) > 10 { self.nearZoneChanged(.near) }
+        }
+        // `open Hop.app --args --show-phone` (or `--dock`) opens the phone screen or dock mode straight away
         if CommandLine.arguments.contains("--show-phone") { toggleMirror() }
+        if CommandLine.arguments.contains("--dock") { toggleDock() }
         refresh()
         if !UserDefaults.standard.bool(forKey: "everPaired") { showPairing() }
         if nearEnabled { near.start(key: server.pairing.key) }
@@ -147,10 +155,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Serv
         startMirror(dock: true)
     }
 
-    private func startMirror(dock: Bool) {
+    /// `quiet`: opened automatically, so don't pop up an error every time it can't reach the phone.
+    private func startMirror(dock: Bool, quiet: Bool = false) {
+        opening = true
         Task {
+            defer { opening = false }
             do {
                 try await mirror.start(phoneIP: server.phoneAddress, title: phoneName ?? "Phone", dock: dock)
+            } catch where quiet {
+                return
             } catch Mirror.Failure.notInstalled {
                 notify("Phone screen needs scrcpy", "Install it once in Terminal with: brew install scrcpy")
             } catch {
@@ -331,9 +344,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Serv
         guard nearEnabled, !calibrating else { return }
         switch zone {
         case .near:
-            guard !mirror.isRunning, !dismissedWhileNear else { break }
+            guard !mirror.isRunning, !dismissedWhileNear, !opening else { break }
             autoMirror = true
-            startMirror(dock: nearOpensDock)
+            lastOpenAttempt = Date()
+            startMirror(dock: nearOpensDock, quiet: true)
         case .far:
             dismissedWhileNear = false
             if autoMirror { autoMirror = false; mirror.stop() }
