@@ -124,7 +124,7 @@ object NearBeacon {
             val data = AdvertiseData.Builder()
                 .setIncludeDeviceName(false)
                 .setIncludeTxPowerLevel(false)
-                .addServiceUuid(SERVICE)
+                // No fixed service ID: with so few Hop users it would work as a tracking tag. The Mac matches the token.
                 .addManufacturerData(COMPANY, NearCrypto.token(key, "hop-near", NearCrypto.window(), flag))
                 .build()
             adv.startAdvertising(settings, data, callback)
@@ -212,8 +212,7 @@ object NearScanner {
         val key = key ?: return
         val name = r.scanRecord?.deviceName ?: return
         val window = NearCrypto.window()
-        // Some Macs shorten the name; a cut-off but matching start still counts
-        val ok = name.length >= 5 && (window - 1..window + 1).any { macName(key, it).startsWith(name) }
+        val ok = (window - 1..window + 1).any { macName(key, it) == name }
         if (!ok) return
         lastHeard = SystemClock.elapsedRealtime()
         samples.addLast(lastHeard to r.rssi)
@@ -295,6 +294,7 @@ class NearService : Service() {
             .build()
         startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
         PhoneStatus.start(this)
+        Ringer.restoreIfInterrupted(this)
         scope.launch {
             while (isActive) { NearScanner.evaluate(); delay(1_000) }
         }

@@ -144,6 +144,7 @@ final class PhoneStream {
             while !stopped {
                 let ptsFlags = try s.readU64()
                 let size = Int(try s.readU32())
+                guard size <= 16 << 20 else { throw StreamError.unsupported } // no frame is this big
                 let packet = try s.read(size)
                 if ptsFlags & (1 << 63) != 0 { handleConfig(packet) } else { handleFrame(packet) }
             }
@@ -232,7 +233,9 @@ final class PhoneStream {
             player.start()
             while !stopped {
                 let ptsFlags = try s.readU64()
-                let packet = try s.read(Int(try s.readU32()))
+                let len = Int(try s.readU32())
+                guard len <= 1 << 20 else { throw StreamError.unsupported }
+                let packet = try s.read(len)
                 if ptsFlags & (1 << 63) == 0 { player.play(packet) }
             }
         } catch {}
@@ -247,7 +250,7 @@ final class PhoneStream {
             guard let type = try? s.read(1).first else { return }
             switch type {
             case 0: // clipboard
-                guard let len = try? s.readU32(), let text = try? s.read(Int(len)) else { return }
+                guard let len = try? s.readU32(), len <= 1 << 20, let text = try? s.read(Int(len)) else { return }
                 if let str = String(data: text, encoding: .utf8) { DispatchQueue.main.async { self.onClipboard(str) } }
             case 1: // ack of our set-clipboard
                 _ = try? s.read(8)

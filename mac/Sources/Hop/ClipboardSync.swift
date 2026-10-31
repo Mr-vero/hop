@@ -14,8 +14,10 @@ final class ClipboardSync {
     }
     /** Sends text to the phone over the Hop link; returns false when it isn't connected. */
     var sendOverLink: (String) -> Bool = { _ in false }
-    /** Where the phone is on Wi-Fi, for the background connection. */
+    /** Where the phone is on Wi-Fi (only while the Hop link vouches for it), for the background connection. */
     var phoneIP: () -> String? = { nil }
+    /** The phone put something on the Mac's clipboard (shown, so it never happens unnoticed). */
+    var onPhoneCopied: (String) -> Void = { _ in }
 
     private var timer: Timer?
     private var changeCount = NSPasteboard.general.changeCount
@@ -63,7 +65,10 @@ final class ClipboardSync {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(text, forType: .string)
+        // Clipboard managers and Apple's Universal Clipboard shouldn't keep it: it may be a password copied on the phone
+        pb.setString("", forType: .init("org.nspasteboard.TransientType"))
         changeCount = pb.changeCount // our own change: don't send it back
+        onPhoneCopied(text)
     }
 
     private func connect() {

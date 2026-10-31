@@ -116,14 +116,15 @@ object HopLink {
             val tried = mutableSetOf<Pair<String, Int>>()
             var connected = false
             // Discovery can hang on some phones; a separate task with a hard limit keeps the loop moving
-            val bonjour: suspend () -> Pair<String, Int>? = { withTimeoutOrNull(6_000) { scope.async { discover(pairing) }.await() } }
-            val hotspot: suspend () -> Pair<String, Int>? = { findOnHotspot(pairing.port) }
+            val bonjour: suspend () -> List<Pair<String, Int>> = { listOfNotNull(withTimeoutOrNull(6_000) { scope.async { discover(pairing) }.await() }) }
+            val hotspot: suspend () -> List<Pair<String, Int>> = { findOnHotspot(pairing.port) }
             val order = if (hotspotSubnets().isNotEmpty()) listOf(hotspot, bonjour) else listOf(bonjour, hotspot)
-            for (find in order + listOf<suspend () -> Pair<String, Int>?>({ saved })) {
-                val target = runCatching { find() }.getOrNull() ?: continue
-                if (!tried.add(target)) continue
-                runCatching { session(net, pairing, target.first, target.second) }
-                if (_state.value is LinkState.Connected) { connected = true; break }
+            search@ for (find in order + listOf<suspend () -> List<Pair<String, Int>>>({ listOf(saved) })) {
+                for (target in runCatching { find() }.getOrDefault(emptyList())) {
+                    if (!tried.add(target)) continue
+                    runCatching { session(net, pairing, target.first, target.second) }
+                    if (_state.value is LinkState.Connected) { connected = true; break@search }
+                }
             }
             // A session that got as far as Connected was healthy; start retries fast again
             if (connected) backoff = 3_000L
@@ -244,20 +245,23 @@ object HopLink {
      * Android's service discovery doesn't look inside the phone's own hotspot, so check the few devices on it
      * for Hop's port directly. Only this phone's hotspot (a /24 or smaller) is ever checked.
      */
-    private suspend fun findOnHotspot(port: Int): Pair<String, Int>? = withTimeoutOrNull(4_000) {
+    private suspend fun findOnHotspot(port: Int): List<Pair<String, Int>> {
         val hosts = hotspotSubnets().filter { it.second >= 24 }.flatMap { (addr, _) ->
             val b = addr.address
             val own = b[3].toInt() and 255
             (1..254).filter { it != own }.map { "${b[0].toInt() and 255}.${b[1].toInt() and 255}.${b[2].toInt() and 255}.$it" }
         }
-        if (hosts.isEmpty()) return@withTimeoutOrNull null
-        val found = Channel<String>(Channel.CONFLATED)
+        if (hosts.isEmpty()) return emptyList()
+        // Every device that answers on Hop's port, so another one holding it open can't hide the real Mac
+        val answered = java.util.concurrent.ConcurrentLinkedQueue<String>()
         val jobs = hosts.map { h ->
             scope.launch {
-                runCatching { Socket().use { it.connect(InetSocketAddress(h, port), 600) }; found.trySend(h) }
+                runCatching { Socket().use { it.connect(InetSocketAddress(h, port), 600) }; answered.add(h) }
             }
         }
-        try { found.receive() to port } finally { jobs.forEach { it.cancel() } }
+        withTimeoutOrNull(2_000) { jobs.forEach { it.join() } }
+        jobs.forEach { it.cancel() }
+        return answered.map { it to port }
     }
 
     /** IPv4 subnets (address, prefix length) of this phone's own hotspot, if it's sharing one. */

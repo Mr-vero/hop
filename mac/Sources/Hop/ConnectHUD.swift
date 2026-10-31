@@ -160,6 +160,7 @@ final class ConnectHUD {
         p.ignoresMouseEvents = true
         p.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
         p.appearance = NSAppearance(named: .darkAqua)
+        p.sharingType = .none // notifications, codes and callers stay out of screen shares and recordings
         island.flushTop = Self.notch != nil
         p.contentView = island
         panel = p

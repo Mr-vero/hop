@@ -71,7 +71,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Serv
             hud.show(urls.count == 1 ? "Sending \(urls[0].lastPathComponent)" : "Sending \(urls.count) files", style: .done, hideAfter: 1.5)
         }
         clipboard.sendOverLink = { [weak self] text in self?.server.sendJSON(["t": "clip", "text": text]) ?? false }
-        clipboard.phoneIP = { [weak self] in self?.server.phoneAddress }
+        clipboard.phoneIP = { [weak self] in self?.verifiedPhoneIP }
+        clipboard.onPhoneCopied = { [weak self] text in
+            let preview = text.count > 40 ? String(text.prefix(40)) + "…" : text
+            self?.hud.show("Copied from phone: \(preview.replacingOccurrences(of: "\n", with: " "))", style: .info, hideAfter: 2)
+        }
         clipboard.start()
         mirror.onUserClosed = { [weak self] in
             guard let self else { return }
@@ -191,6 +195,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Serv
     }
 
     /// `quiet`: opened automatically, so don't pop up an error every time it can't reach the phone.
+    /// The phone's Wi-Fi address, but only while the encrypted Hop link is up and vouches for it. Without the
+    /// link, the phone window and clipboard use the USB cable only.
+    private var verifiedPhoneIP: String? { phoneName != nil ? server.phoneAddress : nil }
+
+    /// Whether the Mac's screen is locked (nothing opens by itself then).
+    private var screenLocked: Bool {
+        (CGSessionCopyCurrentDictionary() as? [String: Any])?["CGSSessionScreenIsLocked"] as? Bool ?? false
+    }
+
     private func startMirror(dock: Bool, quiet: Bool = false) {
         opening = true
         if !quiet || !toldFailure { hud.show(dock ? "Opening dock mode…" : "Connecting to \(phoneName ?? "your phone")…", style: .working) }
@@ -198,7 +211,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Serv
         Task {
             defer { opening = false }
             do {
-                try await mirror.start(phoneIP: server.phoneAddress, title: phoneName ?? "Phone", dock: dock)
+                try await mirror.start(phoneIP: verifiedPhoneIP, title: phoneName ?? "Phone", dock: dock)
             } catch Mirror.Failure.notInstalled {
                 hud.show("Needs scrcpy: brew install scrcpy", style: .info, hideAfter: 5)
             } catch {
@@ -418,7 +431,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Serv
         guard nearEnabled, !calibrating else { return }
         switch zone {
         case .near:
-            guard !mirror.isRunning, !dismissedWhileNear, !opening else { break }
+            // Opens only for the paired phone over the encrypted link, and never on a locked Mac
+            guard phoneName != nil, !screenLocked, !mirror.isRunning, !dismissedWhileNear, !opening else { break }
             autoMirror = true
             lastOpenAttempt = Date()
             startMirror(dock: nearOpensDock, quiet: true)

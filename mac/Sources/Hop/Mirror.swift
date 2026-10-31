@@ -123,52 +123,16 @@ final class Mirror {
             }
             return usb
         }
-        // Over Wi-Fi: try the phone's last known address, the router (on the phone's own hotspot the phone
-        // is the router), then anything adb already knows. adb keeps dead entries around, so check each answers.
-        var candidates = [phoneIP, defaultGateway()].compactMap { $0 }
-        candidates += devices.filter { $0.contains(":") }.map { String($0.split(separator: ":")[0]) }
-        var seen = Set<String>()
-        for ip in candidates where seen.insert(ip).inserted {
-            guard await reachable(ip) else {
-                if devices.contains("\(ip):5555") { _ = try? await adb(["disconnect", "\(ip):5555"]) }
-                continue
-            }
+        // Over Wi-Fi, only the address the encrypted Hop link reports for the paired phone. Wireless adb never proves
+        // who's on the other end, so guessing (the router, old addresses) could hand the clipboard, files and typing
+        // to some other device on a café network.
+        if let ip = phoneIP {
             let target = "\(ip):5555"
             if devices.contains(target) { return target }
             let out = (try? await adb(["connect", target])) ?? ""
             if out.contains("connected to") { return target }
         }
         throw Failure.noPhone
-    }
-
-    /// Whether something answers on the phone's wireless-debugging port within a second.
-    private static func reachable(_ ip: String) async -> Bool {
-        await withCheckedContinuation { cont in
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: "/usr/bin/nc")
-            p.arguments = ["-z", "-G", "1", ip, "5555"]
-            p.standardOutput = FileHandle.nullDevice
-            p.standardError = FileHandle.nullDevice
-            p.terminationHandler = { cont.resume(returning: $0.terminationStatus == 0) }
-            if (try? p.run()) == nil { cont.resume(returning: false) }
-        }
-    }
-
-    /// The router's address on the current network (private ranges only).
-    private static func defaultGateway() -> String? {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/sbin/route")
-        p.arguments = ["-n", "get", "default"]
-        let pipe = Pipe()
-        p.standardOutput = pipe
-        p.standardError = FileHandle.nullDevice
-        guard (try? p.run()) != nil else { return nil }
-        p.waitUntilExit()
-        let out = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        guard let line = out.split(separator: "\n").first(where: { $0.contains("gateway:") }) else { return nil }
-        let ip = line.split(separator: ":").last.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
-        let isPrivate = ip.hasPrefix("192.168.") || ip.hasPrefix("10.") || ip.hasPrefix("172.")
-        return isPrivate ? ip : nil
     }
 
     @discardableResult

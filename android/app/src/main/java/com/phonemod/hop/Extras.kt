@@ -80,6 +80,8 @@ object Ringer {
         stop(ctx)
         val am = ctx.getSystemService(AudioManager::class.java)
         oldVolume = am.getStreamVolume(AudioManager.STREAM_ALARM)
+        // Remembered on disk too, so the volume comes back even if Hop is stopped mid-ring
+        ctx.getSharedPreferences("hop_prefs", Context.MODE_PRIVATE).edit().putInt("alarmVolumeBeforeRing", oldVolume).apply()
         runCatching { am.setStreamVolume(AudioManager.STREAM_ALARM, am.getStreamMaxVolume(AudioManager.STREAM_ALARM), 0) }
         val uri = RingtoneManager.getActualDefaultRingtoneUri(ctx, RingtoneManager.TYPE_ALARM)
             ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
@@ -117,8 +119,19 @@ object Ringer {
             runCatching { ctx.getSystemService(AudioManager::class.java).setStreamVolume(AudioManager.STREAM_ALARM, oldVolume, 0) }
             oldVolume = -1
         }
+        ctx.getSharedPreferences("hop_prefs", Context.MODE_PRIVATE).edit().remove("alarmVolumeBeforeRing").apply()
         ctx.getSystemService(VibratorManager::class.java)?.defaultVibrator?.cancel()
         ctx.getSystemService(NotificationManager::class.java).cancel(NOTIFICATION_ID)
+    }
+}
+
+/** Puts the alarm volume back if a ring was cut off (Hop stopped before it could). */
+fun Ringer.restoreIfInterrupted(ctx: Context) {
+    val prefs = ctx.getSharedPreferences("hop_prefs", Context.MODE_PRIVATE)
+    val v = prefs.getInt("alarmVolumeBeforeRing", -1)
+    if (v >= 0) {
+        runCatching { ctx.getSystemService(AudioManager::class.java).setStreamVolume(AudioManager.STREAM_ALARM, v, 0) }
+        prefs.edit().remove("alarmVolumeBeforeRing").apply()
     }
 }
 
@@ -150,16 +163,26 @@ object NotifBridge {
 
     fun posted(svc: NotificationListenerService, sbn: StatusBarNotification) {
         if (sbn.packageName == svc.packageName) return
-        val n = sbn.notification
-        if (n.category == Notification.CATEGORY_CALL) { call(svc, sbn); return }
         if (!enabled(svc)) return
+        val n = sbn.notification
+        if (n.category == Notification.CATEGORY_CALL) {
+            // Only the phone's real dialer: any app can label a notification as a call
+            val dialer = runCatching { svc.getSystemService(TelecomManager::class.java).defaultDialerPackage }.getOrNull()
+            if (sbn.packageName == dialer) call(svc, sbn)
+            return
+        }
+        // Notifications marked secret never leave the phone
+        if (n.visibility == Notification.VISIBILITY_SECRET) return
         if (n.flags and (Notification.FLAG_ONGOING_EVENT or Notification.FLAG_FOREGROUND_SERVICE or Notification.FLAG_GROUP_SUMMARY) != 0) return
         if (n.category in skipCategories) return
         // Quiet notifications stay quiet
         val ranking = NotificationListenerService.Ranking()
         if (svc.currentRanking?.getRanking(sbn.key, ranking) == true && ranking.importance < NotificationManager.IMPORTANCE_DEFAULT) return
-        val title = n.extras.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
-        val text = (n.extras.getCharSequence(Notification.EXTRA_BIG_TEXT) ?: n.extras.getCharSequence(Notification.EXTRA_TEXT))?.toString().orEmpty()
+        // Private ones show only their public version, the same as on the phone's lock screen
+        val shown = if (n.visibility == Notification.VISIBILITY_PRIVATE) n.publicVersion else n
+        var title = shown?.extras?.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
+        var text = (shown?.extras?.getCharSequence(Notification.EXTRA_BIG_TEXT) ?: shown?.extras?.getCharSequence(Notification.EXTRA_TEXT))?.toString().orEmpty()
+        if (n.visibility == Notification.VISIBILITY_PRIVATE && shown == null) { title = ""; text = "Contents hidden" }
         if (title.isBlank() && text.isBlank()) return
         active[sbn.key] = sbn
         HopLink.sendNow(JSONObject().put("t", "notif").put("id", sbn.key)

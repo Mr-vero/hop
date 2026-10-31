@@ -30,8 +30,10 @@ final class NearSensor: NSObject, CBCentralManagerDelegate, CBPeripheralManagerD
     private var central: CBCentralManager?
     private var peripheral: CBPeripheralManager?
     private var advertisedWindow: Int64 = -1
-    /** The phone's own signed verdict (from its packets or the Hop link) and when it last said so. */
+    /** The phone's verdict over the encrypted Hop link (can open or close), and when it last said so. */
     private var phoneVerdict: (near: Bool, at: Date)?
+    /** When the phone's Bluetooth packets last said "away". Packets can be recorded and replayed, so they only close. */
+    private var advertAway: Date?
     /** The phone's measurement of the Mac's signal, for the menu readout. */
     private(set) var phoneRSSI: Int?
     private var lastHeard = Date.distantPast
@@ -62,6 +64,7 @@ final class NearSensor: NSObject, CBCentralManagerDelegate, CBPeripheralManagerD
         peripheral = nil
         advertisedWindow = -1
         phoneVerdict = nil
+        advertAway = nil
         phoneRSSI = nil
         timer?.invalidate()
         timer = nil
@@ -128,7 +131,7 @@ final class NearSensor: NSObject, CBCentralManagerDelegate, CBPeripheralManagerD
         lastData = maker.map { String(format: "%02x", $0) }.joined() + " @\(Int(value))"
         guard value < 0, value > -110, let flag = ourPhone(token: maker.suffix(6)) else { return }
         // Packets from a phone that judges distance itself carry its verdict, sealed with the pairing key
-        if flag != 0 { phoneVerdict = (flag == 1, Date()) }
+        if flag == 2 { advertAway = Date() }
         lastHeard = Date()
         heardOurs += 1
         samples.append((Date(), value))
@@ -196,6 +199,10 @@ final class NearSensor: NSObject, CBCentralManagerDelegate, CBPeripheralManagerD
         // and it has already smoothed the readings, so act on it straight away
         if let v = phoneVerdict, Date().timeIntervalSince(v.at) < 15 {
             set(v.near ? .near : .far)
+            return
+        }
+        if let away = advertAway, Date().timeIntervalSince(away) < 15 {
+            set(.far)
             return
         }
         let target = targetZone()
