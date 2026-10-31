@@ -22,7 +22,7 @@ final class NearSensor: NSObject, CBCentralManagerDelegate, CBPeripheralManagerD
 
     /** dBm at or above which the phone counts as near. Set by calibration. */
     var nearThreshold: Double {
-        get { UserDefaults.standard.object(forKey: "nearThreshold") as? Double ?? -55 }
+        get { UserDefaults.standard.object(forKey: "nearThreshold") as? Double ?? -45 }
         set { UserDefaults.standard.set(newValue, forKey: "nearThreshold") }
     }
 
@@ -202,14 +202,14 @@ final class NearSensor: NSObject, CBCentralManagerDelegate, CBPeripheralManagerD
         guard target != zone else { pending = nil; return }
         if pending?.zone != target { pending = (target, Date()) }
         // Open quickly when the phone arrives, close slowly when it leaves, so a passing blip never does either
-        let wait: TimeInterval = target == .near ? 1.0 : 4.0
+        let wait: TimeInterval = target == .near ? 1.0 : 2.5
         if let p = pending, Date().timeIntervalSince(p.since) >= wait { set(target) }
     }
 
     private func targetZone() -> Zone {
         guard let r = rssi else { return .far }
-        // Wide hysteresis: once near, it takes a clearly weaker signal to count as gone
-        return r >= nearThreshold - (zone == .near ? 9 : 0) ? .near : .far
+        // A little hysteresis so it does not flicker right at the line
+        return r >= nearThreshold - (zone == .near ? 5 : 0) ? .near : .far
     }
 
     private func set(_ z: Zone) {

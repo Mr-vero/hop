@@ -159,11 +159,11 @@ object NearScanner {
         ContextCompat.checkSelfPermission(ctx, Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED
 
     /** dBm at or above which the Mac counts as near; set by calibrating from the Mac. */
-    fun threshold(ctx: Context) = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt("threshold", -58)
+    fun threshold(ctx: Context) = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt("nearThreshold", -40) // right beside the Mac reads about -25
 
     fun calibrate(ctx: Context): Int? {
         val r = rssi ?: return null
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putInt("threshold", r - 3).apply()
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putInt("nearThreshold", r - 3).apply()
         return r
     }
 
@@ -232,20 +232,20 @@ object NearScanner {
         // Speed up listening while the Mac is around, slow down a minute after it's gone
         val macAround = lastHeard > 0 && now - lastHeard < 60_000
         if (macAround != fastScan) scan(macAround)
-        while (samples.isNotEmpty() && now - samples.first().first > 4_000) samples.removeFirst()
+        while (samples.isNotEmpty() && now - samples.first().first > 2_500) samples.removeFirst()
         rssi = if (samples.isEmpty()) {
             if (now - lastHeard > 10_000) null else rssi
         } else {
             val sorted = samples.map { it.second }.sorted()
-            sorted[minOf(sorted.size - 1, (sorted.size * 0.75).toInt())]
+            sorted[minOf(sorted.size - 1, (sorted.size * 0.6).toInt())]
         }
         val t = threshold(ctx)
         val r = rssi
-        val wants = r != null && r >= t - (if (near) 9 else 0)
+        val wants = r != null && r >= t - (if (near) 4 else 0)
         if (wants != near) {
             if (pendingSince == 0L) pendingSince = now
-            // Near after a second, away after 3 seconds: no flicker from a passing hand
-            if (now - pendingSince >= if (wants) 1_000 else 3_000) {
+            // Near after 0.8 s, away after 1.5 s: quick, but a passing hand does not flip it
+            if (now - pendingSince >= if (wants) 800 else 1_500) {
                 near = wants
                 pendingSince = 0
                 report(force = true)
