@@ -83,11 +83,13 @@ final class PhoneStream {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: adb)
         // Over Wi-Fi (often shared and busy) a smaller, steadier stream feels faster than a sharp, stuttering one
-        var options = ["video_bit_rate=\(config.wireless ? 6_000_000 : 16_000_000)", "max_fps=60", "audio_codec=raw"]
+        // Uncompressed sound alone is 1.5 Mbps, so over Wi-Fi it stays on the phone (which is right beside the Mac)
+        var options = ["video_bit_rate=\(config.wireless ? 2_500_000 : 16_000_000)", "max_fps=60"]
+        options += config.wireless ? ["audio=false"] : ["audio_codec=raw"]
         if let display = config.newDisplay {
             options += ["new_display=\(display)", "max_size=\(config.wireless ? 1600 : 0)", "stay_awake=false", "power_off_on_close=false"]
         } else {
-            options += ["max_size=\(config.wireless ? 1440 : 2340)", "stay_awake=true", "power_off_on_close=true"]
+            options += ["max_size=\(config.wireless ? 1280 : 2340)", "stay_awake=true", "power_off_on_close=true"]
         }
         p.arguments = ["-s", serial, "shell", "CLASSPATH=/data/local/tmp/scrcpy-server.jar", "app_process", "/",
                        "com.genymobile.scrcpy.Server", config.serverVersion,
@@ -105,7 +107,7 @@ final class PhoneStream {
         }
         guard let v = first else { throw StreamError.timeout }
         video = v
-        audio = try BlockingSocket(port: port)
+        if !config.wireless { audio = try BlockingSocket(port: port) } // no sound socket over Wi-Fi
         control = try BlockingSocket(port: port)
         _ = try v.read(64) // device name
     }

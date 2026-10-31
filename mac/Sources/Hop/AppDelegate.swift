@@ -59,15 +59,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Serv
             try? "\(took) s\n".write(to: file, atomically: true, encoding: .utf8)
         }
         mirror.onFailed = { [weak self] in self?.connectFailed() }
-        mirror.onChange = { [weak self] in
+        mirror.onUserClosed = { [weak self] in
             guard let self else { return }
             // Closed by hand while the phone is still near: respect that until it leaves
-            if !self.mirror.isRunning, self.autoMirror {
-                self.autoMirror = false
-                if self.near.zone == .near { self.dismissedWhileNear = true }
-            }
-            self.refresh()
+            if self.near.zone == .near { self.dismissedWhileNear = true }
+            self.autoMirror = false
         }
+        mirror.onChange = { [weak self] in self?.refresh() }
         near.onZone = { [weak self] in self?.nearZoneChanged($0) }
         near.onSignal = { [weak self] _ in
             guard let self else { return }

@@ -2,9 +2,9 @@ import AppKit
 import AVFoundation
 import QuartzCore
 
-/// Either a borderless window drawn as a Galaxy S25 Ultra-style phone (titanium frame, thin black bezel,
-/// camera hole and working side buttons; drag the frame to move it), or in dock mode an ordinary,
-/// resizable Mac window showing the phone's separate desktop display, which can go full screen.
+/// Either a borderless window showing the phone as a clean, slim black device (drag its edge to move it; a
+/// small toolbar appears above it on hover), or in dock mode an ordinary, resizable Mac window showing the
+/// phone's separate desktop display, which can go full screen.
 @MainActor
 final class PhoneWindow: NSWindow {
     private let frameView: PhoneFrameView
@@ -14,6 +14,8 @@ final class PhoneWindow: NSWindow {
     /** The first picture arrived and the window animated in. */
     var onShown: () -> Void = {}
     private(set) var presented = false
+    /** Closed with the close button or ⌘W, as opposed to the connection ending or Hop closing it. */
+    private(set) var closedByUser = false
     private var closing = false
     private var darkenedOnce = false
     private var dockAspect: CGFloat = 0
@@ -27,7 +29,7 @@ final class PhoneWindow: NSWindow {
         self.title = dock ? "\(title) · Dock" : title
         isReleasedWhenClosed = false
         contentView = frameView
-        frameView.onClose = { [weak self] in self?.close() }
+        frameView.onClose = { [weak self] in self?.closedByUser = true; self?.close() }
         if dock {
             backgroundColor = .black
             collectionBehavior = [.fullScreenPrimary]
@@ -61,6 +63,12 @@ final class PhoneWindow: NSWindow {
         center()
     }
 
+    /// The red button of the dock-mode window.
+    override func performClose(_ sender: Any?) {
+        closedByUser = true
+        super.performClose(sender)
+    }
+
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
 
@@ -69,8 +77,8 @@ final class PhoneWindow: NSWindow {
         closing = true
         stream.stop()
         guard presented, isVisible else { finishClose(); return }
-        // Shrink back into the edge of the screen the phone sits beside
-        let a = ConnectHUD.edgeAnchor
+        // Shrink back into the island at the top of the screen
+        let a = ConnectHUD.anchor
         let end = NSRect(x: a.x - frame.width * 0.08, y: a.y - frame.height * 0.08, width: frame.width * 0.16, height: frame.height * 0.16)
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.32
@@ -88,7 +96,7 @@ final class PhoneWindow: NSWindow {
         onClose()
     }
 
-    /// Springs the window out of the right edge of the screen once there's a picture to show.
+    /// Grows the window out of the island at the top of the screen once there's a picture to show.
     private func present() {
         presented = true
         let visible = (screen ?? NSScreen.main)?.visibleFrame ?? .zero
@@ -98,7 +106,7 @@ final class PhoneWindow: NSWindow {
             target.origin.x = visible.maxX - target.width - 48
             target.origin.y = visible.midY - target.height / 2
         }
-        let a = ConnectHUD.edgeAnchor
+        let a = ConnectHUD.anchor
         setFrame(NSRect(x: a.x - target.width * 0.08, y: a.y - target.height * 0.08,
                         width: target.width * 0.16, height: target.height * 0.16), display: false)
         alphaValue = 0
@@ -150,32 +158,54 @@ private func * (s: CGSize, k: CGFloat) -> CGSize { CGSize(width: s.width * k, he
 @MainActor
 final class PhoneFrameView: NSView {
     private let stream: PhoneStream
-    /** False in dock mode: no phone body, the picture fills the window. */
+    /** False in dock mode: no device or toolbar, the picture fills the window. */
     private let bezel: Bool
+    private let device = CALayer()
+    private let screen = CALayer()
     private let display = AVSampleBufferDisplayLayer()
-    private let screenMask = CAShapeLayer()
-    private let camera = CALayer()
+    private let toolbar = ToolbarView()
     private var videoSize = CGSize(width: 1080, height: 2340)
-    private var hovering = false
+    private var hideToolbar: Task<Void, Never>?
     var zoom: CGFloat = 1
     var onClose: () -> Void = {}
+
+    /** Space above the phone for the hover toolbar. */
+    private static let toolbarSpace: CGFloat = 44
 
     init(stream: PhoneStream, bezel: Bool = true) {
         self.stream = stream
         self.bezel = bezel
         super.init(frame: .zero)
-        if !bezel { videoSize = CGSize(width: 1920, height: 1200) } // until the desktop's real size arrives
         wantsLayer = true
-        layer?.backgroundColor = .clear
+        layer?.backgroundColor = bezel ? NSColor.clear.cgColor : NSColor.black.cgColor
+        if !bezel { videoSize = CGSize(width: 1920, height: 1200) } // until the desktop's real size arrives
+
+        // A slim black body with a hairline edge, and the screen set into it with matching continuous corners
+        device.backgroundColor = NSColor.black.cgColor
+        device.cornerCurve = .continuous
+        device.borderWidth = 1
+        device.borderColor = NSColor(white: 1, alpha: 0.14).cgColor
+        device.isHidden = !bezel
+        layer?.addSublayer(device)
+        screen.masksToBounds = true
+        screen.cornerCurve = .continuous
+        screen.backgroundColor = NSColor.black.cgColor
         display.videoGravity = .resize
-        display.backgroundColor = NSColor.black.cgColor
-        display.mask = screenMask
-        layer?.addSublayer(display)
-        camera.backgroundColor = NSColor.black.cgColor
-        camera.borderColor = NSColor(white: 0.18, alpha: 1).cgColor
-        layer?.addSublayer(camera)
-        camera.isHidden = !bezel
-        if !bezel { layer?.backgroundColor = NSColor.black.cgColor }
+        screen.addSublayer(display)
+        layer?.addSublayer(screen)
+
+        toolbar.alphaValue = 0
+        toolbar.isHidden = !bezel
+        toolbar.onAction = { [weak self] action in
+            guard let self else { return }
+            switch action {
+            case .close: onClose()
+            case .back: stream.key(4)
+            case .home: stream.key(3)
+            case .recents: stream.key(187)
+            }
+        }
+        addSubview(toolbar)
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
     }
 
@@ -184,167 +214,86 @@ final class PhoneFrameView: NSView {
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override var mouseDownCanMoveWindow: Bool { false }
 
-    // MARK: geometry (proportions measured from an S25 Ultra: square-ish corners, very thin bezel)
+    // MARK: geometry
 
-    private var landscape: Bool { videoSize.width > videoSize.height }
     var videoAspect: CGFloat { videoSize.width / videoSize.height }
-    private var shortSide: CGFloat { min(screenRect.width, screenRect.height) }
 
-    /// Titanium frame, black bezel and the side-button margin, as fractions of the screen's short side.
-    private struct Metrics { let titanium, bezel, buttons, screenRadius: CGFloat }
-    private func metrics(short: CGFloat) -> Metrics {
-        Metrics(titanium: short * 0.022, bezel: short * 0.024, buttons: short * 0.016, screenRadius: short * 0.055)
-    }
+    /// Bezel width and screen corner radius for a screen of this size.
+    private func bezelWidth(_ short: CGFloat) -> CGFloat { max(6, short * 0.022) }
+    private func screenRadius(_ short: CGFloat) -> CGFloat { short * 0.085 }
 
     func idealSize(maxSize: CGSize) -> CGSize {
-        // Solve for the screen size that fits, then add frame and button margins
-        let aspect = videoSize.width / videoSize.height
-        var h = maxSize.height, w = h * aspect
-        if w > maxSize.width { w = maxSize.width; h = w / aspect }
-        let m = metrics(short: min(w, h))
-        let pad = m.titanium + m.bezel
-        return landscape
-            ? CGSize(width: w + pad * 2, height: h + pad * 2 + m.buttons)
-            : CGSize(width: w + pad * 2 + m.buttons * 2, height: h + pad * 2)
+        let avail = CGSize(width: maxSize.width, height: maxSize.height - Self.toolbarSpace)
+        var h = avail.height, w = h * videoAspect
+        if w > avail.width { w = avail.width; h = w / videoAspect }
+        let b = bezelWidth(min(w, h))
+        return CGSize(width: w + 2 * b, height: h + 2 * b + Self.toolbarSpace)
+    }
+
+    private var deviceRect: CGRect {
+        let b = bounds
+        return CGRect(x: 0, y: Self.toolbarSpace, width: b.width, height: max(0, b.height - Self.toolbarSpace))
     }
 
     private var screenRect: CGRect {
-        let b = bounds
-        if !bezel {
-            // Fit the picture in the window, centred
-            let aspect = videoSize.width / videoSize.height
-            var w = b.width, h = w / aspect
-            if h > b.height { h = b.height; w = h * aspect }
-            return CGRect(x: (b.width - w) / 2, y: (b.height - h) / 2, width: w, height: h)
+        guard bezel else {
+            // Dock mode: fit the picture in the window, centred
+            var w = bounds.width, h = w / videoAspect
+            if h > bounds.height { h = bounds.height; w = h * videoAspect }
+            return CGRect(x: (bounds.width - w) / 2, y: (bounds.height - h) / 2, width: w, height: h)
         }
-        // Estimate from bounds: the short side shares a fixed ratio with the frame
-        let aspect = videoSize.width / videoSize.height
-        let k: CGFloat = 0.022 + 0.024
-        if landscape {
-            let buttons = 0.016
-            let h = b.height / (1 + 2 * k * 1 + buttons)
-            let w = h * aspect
-            return CGRect(x: (b.width - w) / 2, y: b.height - h - h * k, width: w, height: h)
-        } else {
-            let w = b.width / (1 + 2 * k + 2 * 0.016)
-            let h = w / aspect
-            return CGRect(x: (b.width - w) / 2, y: (b.height - h) / 2, width: w, height: h)
-        }
-    }
-
-    private var bodyRect: CGRect {
-        let m = metrics(short: shortSide)
-        return screenRect.insetBy(dx: -(m.titanium + m.bezel), dy: -(m.titanium + m.bezel))
-    }
-
-    /// Side buttons in body coordinates: volume rocker then power, on the right edge (top edge in landscape).
-    private var buttonRects: [(rect: CGRect, keycode: UInt32)] {
-        guard bezel else { return [] }
-        let body = bodyRect, m = metrics(short: shortSide)
-        let len = landscape ? body.width : body.height
-        func seg(_ from: CGFloat, _ to: CGFloat) -> CGRect {
-            landscape
-                ? CGRect(x: body.maxX - len * to, y: body.minY - m.buttons, width: len * (to - from), height: m.buttons + 2)
-                : CGRect(x: body.maxX - 2, y: body.minY + len * from, width: m.buttons + 2, height: len * (to - from))
-        }
-        let rocker = seg(0.20, 0.33)
-        let (up, down) = landscape
-            ? (rocker.divided(atDistance: rocker.width / 2, from: .maxXEdge).slice, rocker.divided(atDistance: rocker.width / 2, from: .maxXEdge).remainder)
-            : (rocker.divided(atDistance: rocker.height / 2, from: .minYEdge).slice, rocker.divided(atDistance: rocker.height / 2, from: .minYEdge).remainder)
-        return [(up, 24), (down, 25), (seg(0.37, 0.44), 26)]
+        let d = deviceRect
+        let b = bezelWidth(min(d.width, d.height))
+        return d.insetBy(dx: b, dy: b)
     }
 
     override func layout() {
         super.layout()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        let s = screenRect, m = metrics(short: shortSide)
-        display.frame = s
-        let radius = bezel ? m.screenRadius : 0
-        screenMask.path = CGPath(roundedRect: CGRect(origin: .zero, size: s.size), cornerWidth: radius, cornerHeight: radius, transform: nil)
-        let d = shortSide * 0.03
-        let c = landscape ? CGPoint(x: s.minX + shortSide * 0.045, y: s.midY) : CGPoint(x: s.midX, y: s.minY + shortSide * 0.045)
-        camera.frame = CGRect(x: c.x - d / 2, y: c.y - d / 2, width: d, height: d)
-        camera.cornerRadius = d / 2
-        camera.borderWidth = d * 0.12
+        let s = screenRect
+        let short = min(s.width, s.height)
+        let r = bezel ? screenRadius(short) : 0
+        screen.frame = s
+        screen.cornerRadius = r
+        display.frame = CGRect(origin: .zero, size: s.size)
+        let d = deviceRect
+        device.frame = d
+        device.cornerRadius = r + bezelWidth(short)
         CATransaction.commit()
-        needsDisplay = true
+        let t = toolbar.fittingSize
+        toolbar.frame = CGRect(x: (bounds.width - t.width) / 2, y: (Self.toolbarSpace - t.height) / 2 - 2, width: t.width, height: t.height)
     }
 
-    // MARK: drawing the body
+    // MARK: hover toolbar
 
-    override func draw(_ dirtyRect: NSRect) {
-        guard bezel, let ctx = NSGraphicsContext.current?.cgContext else { return }
-        let body = bodyRect, m = metrics(short: shortSide)
-        let outerRadius = m.screenRadius + m.titanium + m.bezel
-
-        // Side buttons first, so the frame overlaps their inner edge
-        for b in buttonRects {
-            let p = CGPath(roundedRect: b.rect, cornerWidth: m.buttons * 0.45, cornerHeight: m.buttons * 0.45, transform: nil)
-            ctx.addPath(p)
-            ctx.clip()
-            titanium(ctx, in: b.rect, vertical: !landscape)
-            ctx.resetClip()
-        }
-
-        // Titanium frame with a brushed, lit-from-above gradient
-        let outer = CGPath(roundedRect: body, cornerWidth: outerRadius, cornerHeight: outerRadius, transform: nil)
-        ctx.saveGState()
-        ctx.addPath(outer)
-        ctx.clip()
-        titanium(ctx, in: body, vertical: false)
-        // Soft inner rim where the glass meets the metal
-        let rimRect = body.insetBy(dx: m.titanium * 0.55, dy: m.titanium * 0.55)
-        let rimR = outerRadius - m.titanium * 0.55
-        ctx.addPath(CGPath(roundedRect: rimRect, cornerWidth: rimR, cornerHeight: rimR, transform: nil))
-        ctx.setStrokeColor(NSColor(white: 1, alpha: 0.18).cgColor)
-        ctx.setLineWidth(1)
-        ctx.strokePath()
-        ctx.restoreGState()
-
-        // Glass front: near-black bezel with a faint reflection
-        let glass = body.insetBy(dx: m.titanium, dy: m.titanium)
-        let glassR = m.screenRadius + m.bezel
-        ctx.saveGState()
-        ctx.addPath(CGPath(roundedRect: glass, cornerWidth: glassR, cornerHeight: glassR, transform: nil))
-        ctx.clip()
-        ctx.setFillColor(NSColor(white: 0.02, alpha: 1).cgColor)
-        ctx.fill(glass)
-        let shine = CGGradient(colorsSpace: nil, colors: [NSColor(white: 1, alpha: 0.07).cgColor, NSColor(white: 1, alpha: 0).cgColor] as CFArray, locations: [0, 1])!
-        ctx.drawLinearGradient(shine, start: CGPoint(x: glass.minX, y: glass.minY), end: CGPoint(x: glass.midX, y: glass.midY), options: [])
-        ctx.restoreGState()
-
-        // Close button, shown on hover at the top-left corner like a window control
-        if hovering {
-            let r = closeRect
-            ctx.setFillColor(NSColor(white: 0.12, alpha: 0.92).cgColor)
-            ctx.fillEllipse(in: r)
-            ctx.setStrokeColor(NSColor(white: 0.85, alpha: 1).cgColor)
-            ctx.setLineWidth(1.6)
-            ctx.setLineCap(.round)
-            let i = r.insetBy(dx: r.width * 0.33, dy: r.height * 0.33)
-            ctx.move(to: CGPoint(x: i.minX, y: i.minY)); ctx.addLine(to: CGPoint(x: i.maxX, y: i.maxY))
-            ctx.move(to: CGPoint(x: i.maxX, y: i.minY)); ctx.addLine(to: CGPoint(x: i.minX, y: i.maxY))
-            ctx.strokePath()
+    override func mouseEntered(with event: NSEvent) {
+        guard bezel else { return }
+        hideToolbar?.cancel()
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.2
+            toolbar.animator().alphaValue = 1
         }
     }
 
-    private func titanium(_ ctx: CGContext, in r: CGRect, vertical: Bool) {
-        let colors = [0.42, 0.72, 0.50, 0.30, 0.55, 0.36].map { NSColor(calibratedWhite: $0, alpha: 1).cgColor } as CFArray
-        let g = CGGradient(colorsSpace: nil, colors: colors, locations: [0, 0.18, 0.4, 0.62, 0.82, 1])!
-        let start = vertical ? CGPoint(x: r.minX, y: r.midY) : CGPoint(x: r.minX, y: r.minY)
-        let end = vertical ? CGPoint(x: r.maxX, y: r.midY) : CGPoint(x: r.maxX, y: r.maxY)
-        ctx.drawLinearGradient(g, start: start, end: end, options: [])
+    override func mouseExited(with event: NSEvent) {
+        guard bezel else { return }
+        hideToolbar = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(0.6))
+            guard !Task.isCancelled, let self else { return }
+            self.fadeToolbar(to: 0)
+        }
     }
 
-    private var closeRect: CGRect {
-        let d: CGFloat = 18
-        return CGRect(x: bodyRect.minX + 4, y: bodyRect.minY + 4, width: d, height: d)
+    private func fadeToolbar(to alpha: CGFloat) {
+        let bar = toolbar
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.3
+            bar.animator().alphaValue = alpha
+        }
     }
-
-    override func mouseEntered(with event: NSEvent) { hovering = true; needsDisplay = true }
-    override func mouseExited(with event: NSEvent) { hovering = false; needsDisplay = true }
 
     // MARK: video
 
@@ -376,17 +325,12 @@ final class PhoneFrameView: NSView {
         return CGPoint(x: max(0, min(videoSize.width - 1, x)), y: max(0, min(videoSize.height - 1, y)))
     }
 
-    override var mouseDownCanMoveWindow: Bool { false }
-
     override func mouseDown(with event: NSEvent) {
-        let p = convert(event.locationInWindow, from: nil)
-        if bezel, hovering, closeRect.insetBy(dx: -4, dy: -4).contains(p) { onClose(); return }
-        if let b = buttonRects.first(where: { $0.rect.insetBy(dx: -3, dy: -3).contains(p) }) { stream.key(b.keycode); return }
         if let d = devicePoint(event) {
             touching = true
             stream.touch(.down, at: d, screen: videoSize)
         } else if bezel {
-            window?.performDrag(with: event) // the frame moves the phone around
+            window?.performDrag(with: event) // the edge of the phone moves it around
         }
     }
 
@@ -411,8 +355,7 @@ final class PhoneFrameView: NSView {
     }
 
     override func keyDown(with event: NSEvent) {
-        let cmd = event.modifierFlags.contains(.command)
-        if cmd {
+        if event.modifierFlags.contains(.command) {
             switch event.charactersIgnoringModifiers?.lowercased() {
             case "h": stream.key(3)
             case "b": stream.key(4)
@@ -436,4 +379,56 @@ final class PhoneFrameView: NSView {
             stream.text(chars)
         }
     }
+}
+
+/// The small frosted pill above the phone: close, back, home, recent apps.
+@MainActor
+private final class ToolbarView: NSVisualEffectView {
+    enum Action: CaseIterable { case close, back, home, recents }
+    var onAction: (Action) -> Void = { _ in }
+    private let stack = NSStackView()
+
+    init() {
+        super.init(frame: .zero)
+        material = .hudWindow
+        blendingMode = .behindWindow
+        state = .active
+        wantsLayer = true
+        layer?.cornerRadius = 15
+        layer?.cornerCurve = .continuous
+        layer?.borderWidth = 0.5
+        layer?.borderColor = NSColor(white: 1, alpha: 0.15).cgColor
+        stack.spacing = 2
+        stack.edgeInsets = NSEdgeInsets(top: 3, left: 6, bottom: 3, right: 6)
+        let items: [(Action, String, String)] = [
+            (.close, "xmark", "Close"), (.back, "chevron.backward", "Back"),
+            (.home, "circle", "Home"), (.recents, "square.on.square", "Recent apps"),
+        ]
+        for (action, symbol, tip) in items {
+            let b = NSButton(image: NSImage(systemSymbolName: symbol, accessibilityDescription: tip)!, target: self, action: #selector(tap(_:)))
+            b.isBordered = false
+            b.bezelStyle = .regularSquare
+            b.symbolConfiguration = .init(pointSize: 12, weight: .semibold)
+            b.contentTintColor = NSColor(white: 1, alpha: 0.85)
+            b.toolTip = tip
+            b.tag = Action.allCases.firstIndex(of: action)!
+            b.translatesAutoresizingMaskIntoConstraints = false
+            b.widthAnchor.constraint(equalToConstant: 28).isActive = true
+            b.heightAnchor.constraint(equalToConstant: 24).isActive = true
+            stack.addArrangedSubview(b)
+        }
+        addSubview(stack)
+        appearance = NSAppearance(named: .darkAqua)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var fittingSize: NSSize { stack.fittingSize }
+
+    override func layout() {
+        super.layout()
+        stack.frame = bounds
+    }
+
+    @objc private func tap(_ sender: NSButton) { onAction(Action.allCases[sender.tag]) }
 }

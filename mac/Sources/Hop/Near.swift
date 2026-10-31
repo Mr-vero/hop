@@ -28,6 +28,8 @@ final class NearSensor: NSObject, CBCentralManagerDelegate {
     private var central: CBCentralManager?
     private var lastHeard = Date.distantPast
     private var pending: (zone: Zone, since: Date)?
+    /** Recent readings (time, dBm). */
+    private var samples: [(at: Date, dbm: Double)] = []
     private var timer: Timer?
     // Troubleshooting counters, written to Application Support/Hop/near-status.txt
     private var heardAny = 0
@@ -50,6 +52,7 @@ final class NearSensor: NSObject, CBCentralManagerDelegate {
         timer?.invalidate()
         timer = nil
         rssi = nil
+        samples = []
         pending = nil
         set(.far)
     }
@@ -84,9 +87,8 @@ final class NearSensor: NSObject, CBCentralManagerDelegate {
               isOurPhone(token: maker.suffix(6)) else { return }
         lastHeard = Date()
         heardOurs += 1
-        // Smooth out the jumpy readings: roughly the last second and a half
-        rssi = rssi.map { $0 * 0.75 + value * 0.25 } ?? value
-        evaluate()
+        samples.append((Date(), value))
+        filter()
     }
 
     private func isOurPhone(token: Data) -> Bool {
@@ -103,13 +105,24 @@ final class NearSensor: NSObject, CBCentralManagerDelegate {
     // MARK: zones
 
     private func tick() {
-        // Not heard for a while: out of range, or Bluetooth off (Macs catch only some of the phone's packets)
-        if rssi != nil, Date().timeIntervalSince(lastHeard) > 8 {
-            rssi = nil
-            evaluate()
-        }
+        filter()
+        evaluate()
         onSignal(rssi)
         writeStatus()
+    }
+
+    /// Signal strength from the last 3 seconds. Hands, bodies and the phone lying flat only ever *weaken* the
+    /// signal, so the strong end of the recent readings (75th percentile) tracks distance far better than an average.
+    private func filter() {
+        let now = Date()
+        samples.removeAll { now.timeIntervalSince($0.at) > 3 }
+        guard !samples.isEmpty else {
+            // Macs catch only some packets; only after 6 quiet seconds is the phone really gone (or Bluetooth off)
+            if now.timeIntervalSince(lastHeard) > 6 { rssi = nil }
+            return
+        }
+        let sorted = samples.map(\.dbm).sorted()
+        rssi = sorted[min(sorted.count - 1, Int(Double(sorted.count) * 0.75))]
     }
 
     private func writeStatus() {
@@ -129,14 +142,14 @@ final class NearSensor: NSObject, CBCentralManagerDelegate {
         guard target != zone else { pending = nil; return }
         if pending?.zone != target { pending = (target, Date()) }
         // Open quickly when the phone arrives, close slowly when it leaves, so a passing blip never does either
-        let wait: TimeInterval = target == .near ? 1.5 : 5.0
+        let wait: TimeInterval = target == .near ? 1.0 : 4.0
         if let p = pending, Date().timeIntervalSince(p.since) >= wait { set(target) }
     }
 
     private func targetZone() -> Zone {
         guard let r = rssi else { return .far }
-        // A few dB of hysteresis so the zone doesn't flicker at the boundary
-        return r >= nearThreshold - (zone == .near ? 6 : 0) ? .near : .far
+        // Wide hysteresis: once near, it takes a clearly weaker signal to count as gone
+        return r >= nearThreshold - (zone == .near ? 9 : 0) ? .near : .far
     }
 
     private func set(_ z: Zone) {

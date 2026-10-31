@@ -15,6 +15,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -101,22 +102,31 @@ object HopLink {
         while (scope.isActive) {
             val pairing = Pairing.load(app) ?: run { _state.value = LinkState.Unpaired; return }
             val net = wifi
-            if (net == null) {
-                // Sleep until Wi-Fi appears (the callback wakes us) or something wants to send
+            if (net == null && hotspotSubnets().isEmpty()) {
+                // Sleep until Wi-Fi appears (the callback wakes us), something wants to send, or a hotspot may have started
                 _state.value = LinkState.NoWifi
-                wake.receive()
+                withTimeoutOrNull(30_000) { wake.receive() }
                 continue
             }
             _state.value = LinkState.Searching
+            // Try each way of finding the Mac until one connects: Bonjour on the Wi-Fi, this phone's own hotspot,
+            // then the last known address. (Anyone on the Wi-Fi can advertise our Mac's name, and old addresses go
+            // stale, so one failing never stops the others.)
             val saved = pairing.host to pairing.port
-            val target = discover(pairing) ?: saved
-            val result = runCatching { session(net, pairing, target.first, target.second) }
-            // Anyone on the Wi-Fi can advertise our Mac's name; if that one fails the handshake, try the known address
-            if (result.isFailure && target != saved && _state.value !is LinkState.Connected) {
-                runCatching { session(net, pairing, saved.first, saved.second) }
+            val tried = mutableSetOf<Pair<String, Int>>()
+            var connected = false
+            // Discovery can hang on some phones; a separate task with a hard limit keeps the loop moving
+            val bonjour: suspend () -> Pair<String, Int>? = { withTimeoutOrNull(6_000) { scope.async { discover(pairing) }.await() } }
+            val hotspot: suspend () -> Pair<String, Int>? = { findOnHotspot(pairing.port) }
+            val order = if (hotspotSubnets().isNotEmpty()) listOf(hotspot, bonjour) else listOf(bonjour, hotspot)
+            for (find in order + listOf<suspend () -> Pair<String, Int>?>({ saved })) {
+                val target = runCatching { find() }.getOrNull() ?: continue
+                if (!tried.add(target)) continue
+                runCatching { session(net, pairing, target.first, target.second) }
+                if (_state.value is LinkState.Connected) { connected = true; break }
             }
             // A session that got as far as Connected was healthy; start retries fast again
-            if (_state.value is LinkState.Connected) backoff = 3_000L
+            if (connected) backoff = 3_000L
             _state.value = LinkState.Searching
             // Mac asleep or away: retry with growing gaps, or immediately when something wants to send
             withTimeoutOrNull(backoff) { wake.receive() }
@@ -126,9 +136,11 @@ object HopLink {
 
     // ------------------------------------------------------------------ session
 
-    private suspend fun session(net: Network, pairing: Pairing, host: String, port: Int) {
-        // Bind to Wi-Fi explicitly so the Mac is reached even while mobile data is the default route
-        val s = net.socketFactory.createSocket()
+    private suspend fun session(net: Network?, pairing: Pairing, host: String, port: Int) {
+        // Bind to Wi-Fi explicitly so the Mac is reached even while mobile data is the default route.
+        // A Mac on this phone's own hotspot is reached directly instead (it's on the hotspot's subnet).
+        val onHotspot = hotspotSubnets().any { (prefix, len) -> sameSubnet(host, prefix, len) }
+        val s = if (net != null && !onHotspot) net.socketFactory.createSocket() else Socket()
         s.connect(InetSocketAddress(host, port), 4_000)
         s.tcpNoDelay = true
         s.keepAlive = true
@@ -146,7 +158,6 @@ object HopLink {
             crypto = c
             out = output
             writeLock.withLock { writeJson(JSONObject().put("t", "hello").put("name", deviceName())) }
-
             val hello = readJson(input, c) ?: throw IOException("no hello")
             if (hello.optString("t") != "hello") throw IOException("bad hello")
             if (host != pairing.host || port != pairing.port) pairing.withAddress(app, host, port)
@@ -221,6 +232,41 @@ object HopLink {
     }
 
     // ------------------------------------------------------------------ discovery & network
+
+    /**
+     * Android's service discovery doesn't look inside the phone's own hotspot, so check the few devices on it
+     * for Hop's port directly. Only this phone's hotspot (a /24 or smaller) is ever checked.
+     */
+    private suspend fun findOnHotspot(port: Int): Pair<String, Int>? = withTimeoutOrNull(4_000) {
+        val hosts = hotspotSubnets().filter { it.second >= 24 }.flatMap { (addr, _) ->
+            val b = addr.address
+            val own = b[3].toInt() and 255
+            (1..254).filter { it != own }.map { "${b[0].toInt() and 255}.${b[1].toInt() and 255}.${b[2].toInt() and 255}.$it" }
+        }
+        if (hosts.isEmpty()) return@withTimeoutOrNull null
+        val found = Channel<String>(Channel.CONFLATED)
+        val jobs = hosts.map { h ->
+            scope.launch {
+                runCatching { Socket().use { it.connect(InetSocketAddress(h, port), 600) }; found.trySend(h) }
+            }
+        }
+        try { found.receive() to port } finally { jobs.forEach { it.cancel() } }
+    }
+
+    /** IPv4 subnets (address, prefix length) of this phone's own hotspot, if it's sharing one. */
+    private fun hotspotSubnets(): List<Pair<java.net.Inet4Address, Int>> = runCatching {
+        java.net.NetworkInterface.getNetworkInterfaces().toList()
+            .filter { it.isUp && !it.isLoopback && (it.name.startsWith("swlan") || it.name.startsWith("ap") || it.name.startsWith("softap")) }
+            .flatMap { i -> i.interfaceAddresses.mapNotNull { a -> (a.address as? java.net.Inet4Address)?.let { it to a.networkPrefixLength.toInt() } } }
+    }.getOrDefault(emptyList())
+
+    private fun sameSubnet(host: String, prefix: java.net.Inet4Address, len: Int): Boolean = runCatching {
+        val h = java.net.InetAddress.getByName(host).address
+        val p = prefix.address
+        val mask = if (len == 0) 0 else -1 shl (32 - len)
+        fun Int(b: ByteArray) = (b[0].toInt() and 255 shl 24) or (b[1].toInt() and 255 shl 16) or (b[2].toInt() and 255 shl 8) or (b[3].toInt() and 255)
+        (Int(h) and mask) == (Int(p) and mask)
+    }.getOrDefault(false)
 
     private suspend fun discover(p: Pairing): Pair<String, Int>? = withTimeoutOrNull(5_000) {
         val nsd = app.getSystemService(NsdManager::class.java)
