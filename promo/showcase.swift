@@ -177,7 +177,7 @@ func notesWindow(pasted: Double) {
         symbol("folder", 13, rgb(0xE0A800), CGPoint(x: r.minX + 30, y: r.minY + 91 + Double(i) * 30))
         text(f, 13, .regular, ink, x: r.minX + 46, y: r.minY + 83 + Double(i) * 30)
     }
-    for (i, n) in [("Weekend plans", "Bread, parcel…"), ("Trip ideas", "Bali, Lombok"), ("Recipes", "Nasi goreng")].enumerated() {
+    for (i, n) in [("Weekend plans", "Bread, dinner…"), ("Trip ideas", "Bali, Lombok"), ("Recipes", "Nasi goreng")].enumerated() {
         let y = r.minY + 60 + Double(i) * 62
         if i == 0 { fill(rr(CGRect(x: r.minX + 218, y: y - 6, width: 204, height: 56), 8), rgb(0xFFD60A, 0.3)) }
         text(n.0, 13, .semibold, ink, x: r.minX + 228, y: y)
@@ -195,7 +195,7 @@ func notesWindow(pasted: Double) {
             let y = r.minY + 194
             fill(rr(CGRect(x: ex - 6, y: y - 6, width: 300, height: 34), 6), rgb(0x0A84FF, 0.18 * (1 - prog(t, 26.2, 27.0))))
             stroke(circle(CGPoint(x: ex + 9, y: y + 10), 8), rgb(0xC7C7CC), 1.5)
-            text("Order #48213 · track the parcel", 16, .regular, ink, x: ex + 28, y: y)
+            text("Meet at 24 Rue Oberkampf, 8pm?", 16, .regular, ink, x: ex + 28, y: y)
         }
     }
 }
@@ -433,6 +433,59 @@ func androidCall(_ r: CGRect, radius: Double) {
     }
 }
 
+// MARK: - real Android footage (recorded on an emulator, see footage/)
+
+var footageGens: [String: AVAssetImageGenerator] = [:]
+var footageCache: [String: CGImage] = [:]
+/// A frame of footage/<clip>.mp4 at `time` seconds, held on its last frame.
+func footageFrame(_ clip: String, _ time: Double) -> CGImage? {
+    let gen = footageGens[clip] ?? {
+        let g = AVAssetImageGenerator(asset: AVURLAsset(url: URL(fileURLWithPath: "footage/\(clip).mp4")))
+        g.requestedTimeToleranceBefore = .zero; g.requestedTimeToleranceAfter = .zero
+        footageGens[clip] = g
+        return g
+    }()
+    let f = max(0, Int(time * 30))
+    let key = "\(clip)#\(f)"
+    if let img = footageCache[key] { return img }
+    var img: CGImage?
+    for back in 0..<120 where img == nil {   // past the end: walk back to the last frame
+        img = try? gen.copyCGImage(at: CMTime(value: CMTimeValue(max(0, f - back)), timescale: 30), actualTime: nil)
+    }
+    if footageCache.count > 8 { footageCache.removeAll() }
+    footageCache[key] = img
+    return img
+}
+
+/// Draws footage filling a phone screen rect.
+func footage(_ clip: String, _ time: Double, _ r: CGRect, radius: Double) {
+    guard let img = footageFrame(clip, time) else { return }
+    clipped(rr(r, radius)) {
+        let ar = Double(img.width) / Double(img.height)
+        let w = max(r.width, r.height * ar), h = w / ar
+        let d = CGRect(x: r.midX - w / 2, y: r.midY - h / 2, width: w, height: h)
+        ctx.saveGState()
+        ctx.translateBy(x: d.minX, y: d.maxY); ctx.scaleBy(x: 1, y: -1)
+        ctx.interpolationQuality = .high
+        ctx.draw(img, in: CGRect(x: 0, y: 0, width: d.width, height: d.height))
+        ctx.restoreGState()
+    }
+}
+
+/// The phone's screen, shown on the phone and mirrored in Hop's window.
+func phoneScreen(_ r: CGRect, radius: Double) {
+    footage("chat", 0.3, r, radius: radius)
+    // a notification opened from the Mac: the Mum chat
+    let chat = easeInOut(prog(t, 15.7, 16.1))
+    if chat > 0 { alpha(chat) { footage("chat", min(7.0, 3.0 + max(0, t - 15.9) * 0.6), r, radius: radius) } }
+    // the call rings, then is answered from the Mac's island
+    alpha(window(t, 18.7, 20.3, 0.2)) { footage("call", 5.3 + (t - 18.7), r, radius: radius) }
+    // long-press Jaime's message to copy the address
+    alpha(window(t, 22.9, 24.1, 0.25)) { footage("copy", 1.5 + (t - 22.9), r, radius: radius) }
+    // the bank's code arrives
+    alpha(window(t, 27.9, 29.8, 0.3)) { footage("code", 1.0 + (t - 27.9), r, radius: radius) }
+}
+
 /// The real phone, beside the Mac.
 func phoneMockup(_ c: CGPoint, scale k: Double, screen: (CGRect, Double) -> Void) {
     let body = CGRect(x: c.x - 135 * k, y: c.y - 285 * k, width: 270 * k, height: 570 * k)
@@ -556,8 +609,7 @@ func screenContent() {
             shadowed(36, 0.35, 16) { fill(rr(phoneWin, 38), black) }
             stroke(rr(phoneWin, 38), rgb(0xFFFFFF, 0.14), 1)
             let s = phoneWin.insetBy(dx: 8, dy: 8)
-            androidHome(s, radius: 31)
-            alpha(easeInOut(prog(t, 15.7, 16.1))) { androidChat(s, radius: 31) }
+            phoneScreen(s, radius: 31)
             // drop highlight
             let drop = window(t, 33.0, 33.4, 0.15)
             if drop > 0 { stroke(rr(phoneWin.insetBy(dx: -2, dy: -2), 40), rgb(0x0A84FF, drop), 4) }
@@ -894,37 +946,7 @@ func mainFrame(_ time: Double) {
             }
         }
         phoneMockup(bc, scale: 0.82) { s, rad in
-            androidHome(s, radius: rad)
-            alpha(window(t, 18.7, 20.3, 0.2)) { androidCall(s, radius: rad) }
-            // copy on the phone
-            let copy = window(t, 22.9, 24.1, 0.25)
-            alpha(copy) {
-                let k = s.width / 260
-                clipped(rr(s, rad)) {
-                    fillR(s, rgb(0x000000, 0.25))
-                    let b = CGRect(x: s.minX + 18 * k, y: s.minY + 190 * k, width: s.width - 36 * k, height: 70 * k)
-                    fill(rr(b, 14 * k), white)
-                    fill(rr(CGRect(x: b.minX + 10 * k, y: b.minY + 10 * k, width: 150 * k, height: 22 * k), 4), rgb(0x0A84FF, 0.25))
-                    text("Order #48213", 15 * k, .semibold, ink, x: b.minX + 14 * k, y: b.minY + 12 * k)
-                    text("Track the parcel", 12 * k, .regular, ink2, x: b.minX + 14 * k, y: b.minY + 40 * k)
-                    let pop = CGRect(x: b.minX + 24 * k, y: b.minY - 40 * k, width: 150 * k, height: 32 * k)
-                    fill(rr(pop, 8 * k), rgb(0x2B2D35))
-                    text("Copy    Share", 13 * k, .medium, white, x: pop.midX, y: pop.minY + 8 * k, align: .center)
-                    if t > 23.4 && t < 23.7 { fill(rr(CGRect(x: pop.minX + 6 * k, y: pop.minY + 4 * k, width: 52 * k, height: 24 * k), 6 * k), rgb(0xFFFFFF, 0.2)) }
-                }
-            }
-            // SMS banner
-            let sms = window(t, 27.9, 29.8, 0.3)
-            alpha(sms) {
-                let k = s.width / 260
-                let b = CGRect(x: s.minX + 8 * k, y: s.minY + (30 - (1 - sms) * 30) * k, width: s.width - 16 * k, height: 72 * k)
-                clipped(rr(s, rad)) {
-                    fill(rr(b, 16 * k), rgb(0xFFFFFF, 0.97))
-                    appIcon(CGRect(x: b.minX + 10 * k, y: b.minY + 14 * k, width: 26 * k, height: 26 * k), 0x0A84FF, "message.fill")
-                    text("Bank · now", 10 * k, .semibold, ink2, x: b.minX + 44 * k, y: b.minY + 12 * k)
-                    text("Your code is 482913", 13 * k, .semibold, ink, x: b.minX + 44 * k, y: b.minY + 30 * k)
-                }
-            }
+            phoneScreen(s, radius: rad)
             // received file
             let got = window(t, 33.6, 35.0, 0.3)
             alpha(got) {
