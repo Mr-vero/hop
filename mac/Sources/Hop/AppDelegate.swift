@@ -24,6 +24,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Serv
     private var calibrating = false
     private var opening = false
     private var lastOpenAttempt = Date.distantPast
+    private let hud = ConnectHUD()
+    private var connectStarted = Date()
+    /** One "couldn't connect" message per arrival of the phone, not one per retry. */
+    private var toldFailure = false
     private var nearItem: NSMenuItem?
     private var nearEnabled: Bool {
         get { UserDefaults.standard.bool(forKey: "nearEnabled") }
@@ -46,6 +50,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Serv
 
         server.delegate = self
         server.start()
+        mirror.onShown = { [weak self] in
+            guard let self else { return }
+            hud.show("Connected", style: .done, hideAfter: 1.2)
+            // Written for troubleshooting: how long connecting took
+            let took = String(format: "%.1f", Date().timeIntervalSince(connectStarted))
+            let file = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Hop/connect-time.txt")
+            try? "\(took) s\n".write(to: file, atomically: true, encoding: .utf8)
+        }
+        mirror.onFailed = { [weak self] in self?.connectFailed() }
         mirror.onChange = { [weak self] in
             guard let self else { return }
             // Closed by hand while the phone is still near: respect that until it leaves
@@ -158,19 +171,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Serv
     /// `quiet`: opened automatically, so don't pop up an error every time it can't reach the phone.
     private func startMirror(dock: Bool, quiet: Bool = false) {
         opening = true
+        if !quiet || !toldFailure { hud.show(dock ? "Opening dock mode…" : "Connecting to \(phoneName ?? "your phone")…", style: .working) }
+        connectStarted = Date()
         Task {
             defer { opening = false }
             do {
                 try await mirror.start(phoneIP: server.phoneAddress, title: phoneName ?? "Phone", dock: dock)
-            } catch where quiet {
-                return
             } catch Mirror.Failure.notInstalled {
-                notify("Phone screen needs scrcpy", "Install it once in Terminal with: brew install scrcpy")
+                hud.show("Needs scrcpy: brew install scrcpy", style: .info, hideAfter: 5)
             } catch {
-                notify("Couldn't reach your phone's screen",
-                       "Plug the phone into this Mac with USB once. After that it also works over Wi-Fi until the phone restarts.")
+                connectFailed()
             }
         }
+    }
+
+    private func connectFailed() {
+        // Retries while the phone stays near shouldn't flash the same message every 10 seconds
+        if toldFailure, autoMirror { hud.hide(); return }
+        toldFailure = true
+        hud.show("Can't reach the phone. Plug it in by USB once", style: .info, hideAfter: 5)
     }
 
     @objc private func copyRecentCode(_ sender: NSMenuItem) {
@@ -350,7 +369,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Serv
             startMirror(dock: nearOpensDock, quiet: true)
         case .far:
             dismissedWhileNear = false
-            if autoMirror { autoMirror = false; mirror.stop() }
+            toldFailure = false
+            if autoMirror {
+                autoMirror = false
+                if mirror.isRunning { hud.show("Phone moved away", style: .info, hideAfter: 2) }
+                mirror.stop()
+            }
         }
         nearItem?.title = nearStatus()
     }
@@ -362,7 +386,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Serv
         switch near.zone {
         case .far: return "Not close enough yet" + signal
         case .near:
-            if mirror.isRunning { return "Near: showing your phone" + signal }
+            if mirror.isShowing { return "Near: showing your phone" + signal }
+            if mirror.isRunning { return "Near: connecting…" + signal }
             if dismissedWhileNear { return "Near: closed by you, opens again next time" + signal }
             return "Near: opening…" + signal
         }

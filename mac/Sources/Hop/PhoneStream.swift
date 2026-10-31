@@ -68,7 +68,13 @@ final class PhoneStream {
 
     private func connect() throws {
         let adb = config.adb, serial = config.serial
-        _ = try Self.run(adb, ["-s", serial, "push", config.serverJar, "/data/local/tmp/scrcpy-server.jar"])
+        // Only send the helper program when the phone doesn't already have this exact one (saves time over Wi-Fi)
+        let localSize = (try? FileManager.default.attributesOfItem(atPath: config.serverJar)[.size] as? NSNumber)?.intValue ?? -1
+        let remoteSize = Int((try? Self.run(adb, ["-s", serial, "shell", "stat", "-c", "%s", "/data/local/tmp/scrcpy-server.jar"]))?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? "") ?? -2
+        if localSize != remoteSize {
+            _ = try Self.run(adb, ["-s", serial, "push", config.serverJar, "/data/local/tmp/scrcpy-server.jar"])
+        }
 
         let scid = String(format: "%08x", UInt32.random(in: 1...0x7fffffff))
         port = UInt16.random(in: 27200...27999)
@@ -76,11 +82,12 @@ final class PhoneStream {
 
         let p = Process()
         p.executableURL = URL(fileURLWithPath: adb)
-        var options = ["video_bit_rate=\(config.wireless ? 8_000_000 : 16_000_000)", "audio_codec=raw"]
+        // Over Wi-Fi (often shared and busy) a smaller, steadier stream feels faster than a sharp, stuttering one
+        var options = ["video_bit_rate=\(config.wireless ? 6_000_000 : 16_000_000)", "max_fps=60", "audio_codec=raw"]
         if let display = config.newDisplay {
-            options += ["new_display=\(display)", "max_size=0", "stay_awake=false", "power_off_on_close=false"]
+            options += ["new_display=\(display)", "max_size=\(config.wireless ? 1600 : 0)", "stay_awake=false", "power_off_on_close=false"]
         } else {
-            options += ["max_size=\(config.wireless ? 1600 : 2340)", "stay_awake=true", "power_off_on_close=true"]
+            options += ["max_size=\(config.wireless ? 1440 : 2340)", "stay_awake=true", "power_off_on_close=true"]
         }
         p.arguments = ["-s", serial, "shell", "CLASSPATH=/data/local/tmp/scrcpy-server.jar", "app_process", "/",
                        "com.genymobile.scrcpy.Server", config.serverVersion,

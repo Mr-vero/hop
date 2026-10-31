@@ -10,8 +10,13 @@ final class Mirror {
         .first { FileManager.default.fileExists(atPath: "\($0)/bin/adb") } ?? "/opt/homebrew"
     private static let brew = "\(prefix)/bin"
     private var window: PhoneWindow?
-    var isRunning: Bool { window?.isVisible == true }
+    /** Showing, or still connecting. */
+    var isRunning: Bool { window != nil }
     var onChange: () -> Void = {}
+    /** The window is up with a live picture. */
+    var onShown: () -> Void = {}
+    /** It didn't get as far as showing a picture. */
+    var onFailed: () -> Void = {}
 
     static var isInstalled: Bool { serverJar != nil }
 
@@ -42,13 +47,22 @@ final class Mirror {
         }
         let stream = try await Self.openStream(phoneIP: phoneIP, newDisplay: dock ? Self.dockDisplaySize() : nil)
         let w = PhoneWindow(stream: stream, title: title, dock: dock)
-        w.onClose = { [weak self] in self?.window = nil; self?.onChange() }
+        w.onClose = { [weak self, weak w] in
+            guard let self, self.window === w else { return }
+            self.window = nil
+            if w?.presented == false { self.onFailed() }
+            self.onChange()
+        }
+        w.onShown = { [weak self] in self?.onShown(); self?.onChange() }
         stream.onEnded = { [weak w] _ in w?.close() }
         stream.start()
         window = w
-        NSApp.activate()
-        w.makeKeyAndOrderFront(nil)
         onChange()
+        // The window stays hidden until the first picture; give up if none comes
+        Task { [weak self, weak w] in
+            try? await Task.sleep(for: .seconds(15))
+            if let w, w.presented == false, self?.window === w { w.close() }
+        }
     }
 
     func stop() {
@@ -56,6 +70,7 @@ final class Mirror {
     }
 
     var isDock: Bool { window?.isDock == true }
+    var isShowing: Bool { window?.presented == true }
 
     /// A desktop display shaped like this Mac's screen, about 1920 pixels wide.
     private static func dockDisplaySize() -> String {

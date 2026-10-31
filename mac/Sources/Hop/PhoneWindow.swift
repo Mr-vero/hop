@@ -11,6 +11,10 @@ final class PhoneWindow: NSWindow {
     private let stream: PhoneStream
     let isDock: Bool
     var onClose: () -> Void = {}
+    /** The first picture arrived and the window animated in. */
+    var onShown: () -> Void = {}
+    private(set) var presented = false
+    private var closing = false
     private var darkenedOnce = false
     private var dockAspect: CGFloat = 0
 
@@ -36,10 +40,15 @@ final class PhoneWindow: NSWindow {
             collectionBehavior = [.fullScreenNone]
         }
 
-        stream.onFormat = { [weak self] desc, size in self?.frameView.setVideo(size: size, format: desc); self?.fit(animated: true) }
+        stream.onFormat = { [weak self] desc, size in
+            guard let self else { return }
+            frameView.setVideo(size: size, format: desc)
+            fit(animated: presented)
+        }
         stream.onFrame = { [weak self] sample in
             guard let self else { return }
             frameView.show(sample)
+            if !presented { present() }
             // Like iPhone Mirroring: the phone goes dark while you use it from the Mac (⌘O toggles).
             // Dock mode runs on its own display, so the phone stays usable there.
             if !isDock, !darkenedOnce { darkenedOnce = true; stream.setDisplay(on: false) }
@@ -56,9 +65,52 @@ final class PhoneWindow: NSWindow {
     override var canBecomeMain: Bool { true }
 
     override func close() {
+        guard !closing else { return }
+        closing = true
         stream.stop()
+        guard presented, isVisible else { finishClose(); return }
+        // Shrink back into the edge of the screen the phone sits beside
+        let a = ConnectHUD.edgeAnchor
+        let end = NSRect(x: a.x - frame.width * 0.08, y: a.y - frame.height * 0.08, width: frame.width * 0.16, height: frame.height * 0.16)
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.32
+            ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.4, 0, 0.8, 0.4)
+            animator().setFrame(end, display: true)
+            animator().alphaValue = 0
+        }, completionHandler: { [weak self] in
+            Task { @MainActor in self?.finishClose() }
+        })
+    }
+
+    private func finishClose() {
         super.close()
+        alphaValue = 1
         onClose()
+    }
+
+    /// Springs the window out of the right edge of the screen once there's a picture to show.
+    private func present() {
+        presented = true
+        let visible = (screen ?? NSScreen.main)?.visibleFrame ?? .zero
+        var target = frame
+        if !isDock {
+            // The phone appears on the side of the screen it's lying beside
+            target.origin.x = visible.maxX - target.width - 48
+            target.origin.y = visible.midY - target.height / 2
+        }
+        let a = ConnectHUD.edgeAnchor
+        setFrame(NSRect(x: a.x - target.width * 0.08, y: a.y - target.height * 0.08,
+                        width: target.width * 0.16, height: target.height * 0.16), display: false)
+        alphaValue = 0
+        NSApp.activate()
+        makeKeyAndOrderFront(nil)
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.5
+            ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.18, 1.12, 0.35, 1.0) // slight overshoot, like a spring
+            animator().setFrame(target, display: true)
+            animator().alphaValue = 1
+        }
+        onShown()
     }
 
     /// Sizes the window so the phone is about 80% of the screen's height (or width when landscape).
