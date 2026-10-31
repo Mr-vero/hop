@@ -22,3 +22,5 @@ promo/promo
 promo/*.mp4
 promo/film
 promo/showcase
+promo/music
+promo/*.wav

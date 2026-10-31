@@ -6,7 +6,7 @@ import AppKit
 import AVFoundation
 import CoreText
 
-let W = 1920.0, H = 1080.0, FPS = 30.0, DUR = 45.0
+let W = 1920.0, H = 1080.0, FPS = 30.0, DUR = 59.5
 let here = URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent()
 let iconImage: CGImage = {
     let src = CGImageSourceCreateWithURL(here.appendingPathComponent("../art/icon-1024.png") as CFURL, nil)!
@@ -186,7 +186,7 @@ func notesWindow(pasted: Double) {
     let ex = r.minX + 460
     text("Weekend plans", 26, .bold, ink, x: ex, y: r.minY + 56)
     text("Friday, 31 October 2026", 12, .regular, ink2, x: ex, y: r.minY + 92)
-    for (i, item) in ["Pick up the bread", "Call Sarah back"].enumerated() {
+    for (i, item) in ["Pick up the bread", "Call Jaime back"].enumerated() {
         stroke(circle(CGPoint(x: ex + 9, y: r.minY + 136 + Double(i) * 34), 8), rgb(0xC7C7CC), 1.5)
         text(item, 16, .regular, ink, x: ex + 28, y: r.minY + 126 + Double(i) * 34)
     }
@@ -304,7 +304,7 @@ func island(_ kind: Island, open: Double, width: Double, height: Double, green: 
         case .call, .answered:
             let answered: Bool = { if case .answered = kind { return true }; return false }()
             symbol("phone.fill", 18, rgb(0x34C759), CGPoint(x: x0 + 14, y: cy))
-            text("Sarah", 15, .semibold, white, x: x0 + 38, y: cy - 18)
+            text("Jaime", 15, .semibold, white, x: x0 + 38, y: cy - 18)
             text(answered ? "On a call on your phone" : "Incoming call · mobile", 12, .regular, rgb(0xFFFFFF, 0.72), x: x0 + 38, y: cy)
             if !answered {
                 roundButton(CGPoint(x: r.maxX - 74, y: cy), 17, red, "phone.down.fill")
@@ -425,8 +425,8 @@ func androidCall(_ r: CGRect, radius: Double) {
         fillGradient(CGPath(rect: r, transform: nil), [rgb(0x0F3D2E), rgb(0x0B1F18)], CGPoint(x: r.minX, y: r.minY), CGPoint(x: r.minX, y: r.maxY))
         statusBar(r, scale: k)
         fill(circle(CGPoint(x: r.midX, y: r.minY + 140 * k), 40 * k), rgb(0xFFFFFF, 0.15))
-        text("S", 34 * k, .semibold, white, x: r.midX, y: r.minY + 119 * k, align: .center)
-        text("Sarah", 24 * k, .semibold, white, x: r.midX, y: r.minY + 196 * k, align: .center)
+        text("J", 34 * k, .semibold, white, x: r.midX, y: r.minY + 119 * k, align: .center)
+        text("Jaime", 24 * k, .semibold, white, x: r.midX, y: r.minY + 196 * k, align: .center)
         text("Incoming call", 13 * k, .regular, rgb(0xFFFFFF, 0.7), x: r.midX, y: r.minY + 230 * k, align: .center)
         roundButton(CGPoint(x: r.midX - 62 * k, y: r.maxY - 70 * k), 26 * k, red, "phone.down.fill")
         roundButton(CGPoint(x: r.midX + 62 * k, y: r.maxY - 70 * k), 26 * k, rgb(0x34C759), "phone.fill")
@@ -524,7 +524,7 @@ func screenContent() {
                         fillR(CGRect(x: q.minX, y: q.minY + 14, width: q.width, height: 30), rgb(0xF4F5F9))
                         text(i == 0 ? "Messages" : "Browser", 14, .semibold, ink, x: q.minX + 18, y: q.minY + 14)
                         if i == 0 {
-                            for (j, s) in ["Mum: Great, see you soon 😊", "Sarah: Missed call", "Dimas: Lunch tomorrow?", "Bank: Your code is 482913"].enumerated() {
+                            for (j, s) in ["Mum: Great, see you soon 😊", "Jaime: Missed call", "Dimas: Lunch tomorrow?", "Bank: Your code is 482913"].enumerated() {
                                 let y = q.minY + 70 + Double(j) * 70
                                 fill(circle(CGPoint(x: q.minX + 40, y: y + 22), 20), rgb([0xFF9F0A, 0x34C759, 0x5AC8FA, 0xAF52DE][j]))
                                 text(s, 15, .regular, ink, x: q.minX + 72, y: y + 12)
@@ -644,7 +644,202 @@ func keycaps(_ keys: [String], at c: CGPoint, _ v: Double) {
     }
 }
 
-func frame(_ time: Double) {
+/// The whole film: a keynote-style cold open, the demo, the encryption story, then the recap and outro.
+func frame(_ T: Double) {
+    let local = T < 44.4 ? T - 4 : T < 54.4 ? 40.45 : T - 14
+    mainFrame(max(0, local))
+    let co = 1 - easeInOut(prog(T, 3.6, 4.4))
+    if co > 0 { alpha(co) { coldOpen(T) } }
+    let enc = window(T, 44.0, 54.0, 0.6)
+    if enc > 0 { alpha(enc) { encryption(T - 44.4) } }
+}
+
+// MARK: - keynote-style sequences (black)
+
+func keynoteBackground(_ glowAt: CGPoint) {
+    fillR(CGRect(x: 0, y: 0, width: W, height: H), rgb(0x000000))
+    glow(glowAt, 900, rgb(0x2A3BFF, 0.18))
+}
+
+func coldOpen(_ T: Double) {
+    keynoteBackground(CGPoint(x: W / 2, y: H * 0.55))
+    func word(_ s: String, _ a: Double, _ y: Double, grad: Bool = false) {
+        let v = easeOut(prog(T, a, a + 0.7)) * (1 - easeIn(prog(T, 3.3, 3.8)))
+        guard v > 0 else { return }
+        alpha(v) {
+            let yy = y + (1 - v) * 18
+            if grad { gradText(s, 110, .bold, x: W / 2, y: yy) } else { text(s, 110, .bold, white, x: W / 2, y: yy, align: .center, kern: -3) }
+        }
+    }
+    word("Your Mac.", 0.3, 290)
+    word("Your Android.", 1.1, 430)
+    word("Finally, together.", 2.0, 570, grad: true)
+}
+
+/// Line-art phone and Mac, glowing, for the security story.
+func lineDevices(_ e: Double, phone: CGRect, mac: CGRect, phoneScreen: () -> Void, macScreen: () -> Void) {
+    let line = rgb(0xFFFFFF, 0.85)
+    shadowed(30, 0.0, 0) {}
+    // phone
+    fill(rr(phone, 38), rgb(0x0B0D14))
+    stroke(rr(phone, 38), line, 2)
+    clipped(rr(phone.insetBy(dx: 10, dy: 10), 30)) { phoneScreen() }
+    // mac
+    let screen = CGRect(x: mac.minX, y: mac.minY, width: mac.width, height: mac.height * 0.82)
+    fill(rr(screen, 18), rgb(0x0B0D14))
+    stroke(rr(screen, 18), line, 2)
+    clipped(rr(screen.insetBy(dx: 12, dy: 12), 10)) { macScreen() }
+    let base = CGMutablePath()
+    base.move(to: CGPoint(x: mac.minX - 50, y: mac.maxY)); base.addLine(to: CGPoint(x: mac.maxX + 50, y: mac.maxY))
+    base.addLine(to: CGPoint(x: mac.maxX + 30, y: mac.maxY - mac.height * 0.1)); base.addLine(to: CGPoint(x: mac.minX - 30, y: mac.maxY - mac.height * 0.1)); base.closeSubpath()
+    fill(base, rgb(0x0B0D14)); stroke(base, line, 2)
+    fill(rr(CGRect(x: screen.midX - 50, y: screen.minY, width: 100, height: 16), 8), rgb(0x000000))
+}
+
+/// Deterministic scrambled text that keeps changing, like ciphertext streaming past.
+func cipher(_ n: Int, _ seed: Int) -> String {
+    let chars = Array("0123456789abcdef")
+    var x = UInt64(seed &* 2654435761 &+ 1)
+    return String((0..<n).map { _ in x = x &* 6364136223846793005 &+ 1442695040888963407; return chars[Int((x >> 33) % 16)] })
+}
+
+func encryption(_ e: Double) {
+    keynoteBackground(CGPoint(x: W / 2, y: 620))
+    let phone = CGRect(x: 300, y: 330, width: 210, height: 430)
+    let mac = CGRect(x: 1140, y: 330, width: 520, height: 400)
+    let captionY = 120.0
+    func caption(_ a: Double, _ b: Double, _ l1: String, _ l2: String) {
+        let v = window(e, a, b, 0.5)
+        guard v > 0 else { return }
+        alpha(v) {
+            text(l1, 56, .bold, white, x: W / 2, y: captionY + (1 - v) * 14, align: .center, kern: -1.4)
+            gradText(l2, 30, .semibold, x: W / 2, y: captionY + 80 + (1 - v) * 14)
+        }
+    }
+    caption(0.2, 2.6, "Pair once.", "One key. Only your two devices hold it.")
+    caption(3.0, 6.4, "Encrypted before it leaves your phone.", "AES-256-GCM · a fresh key for every connection")
+    caption(6.8, 9.6, "Never through the cloud.", "Phone to Mac, directly. No servers. No account.")
+
+    let appear = easeOut(prog(e, 0.0, 0.6))
+    alpha(appear) {
+        lineDevices(e, phone: phone, mac: mac, phoneScreen: {
+            let s = phone.insetBy(dx: 10, dy: 10)
+            // scanning frame
+            let scan = window(e, 0.5, 1.6, 0.2)
+            alpha(scan) {
+                let f = CGRect(x: s.midX - 60, y: s.midY - 60, width: 120, height: 120)
+                for (cx, cy, dx, dy) in [(f.minX, f.minY, 1.0, 1.0), (f.maxX, f.minY, -1.0, 1.0), (f.minX, f.maxY, 1.0, -1.0), (f.maxX, f.maxY, -1.0, -1.0)] {
+                    let p = CGMutablePath(); p.move(to: CGPoint(x: cx, y: cy + dy * 24)); p.addLine(to: CGPoint(x: cx, y: cy)); p.addLine(to: CGPoint(x: cx + dx * 24, y: cy))
+                    stroke(p, rgb(0x00C6FF), 3)
+                }
+                let ly = f.minY + f.height * (0.5 + 0.5 * sin(e * 6))
+                fillR(CGRect(x: f.minX + 6, y: ly, width: f.width - 12, height: 2), rgb(0x00C6FF, 0.8))
+            }
+            // the message about to be sent
+            let msg = window(e, 2.8, 3.4, 0.3)
+            alpha(msg) {
+                let b = CGRect(x: s.minX + 16, y: s.midY - 20, width: s.width - 32, height: 44)
+                fill(rr(b, 22), rgb(0x0A84FF))
+                text("Dinner at 7? 🍞", 17, .medium, white, x: b.midX, y: b.minY + 12, align: .center)
+            }
+        }, macScreen: {
+            let s = CGRect(x: mac.minX + 12, y: mac.minY + 12, width: mac.width - 24, height: mac.height * 0.82 - 24)
+            // QR code
+            let qr = window(e, 0.3, 1.6, 0.3)
+            alpha(qr) {
+                let n = 21, size = 8.0, x0 = s.midX - Double(n) * size / 2, y0 = s.midY - Double(n) * size / 2
+                fill(rr(CGRect(x: x0 - 14, y: y0 - 14, width: Double(n) * size + 28, height: Double(n) * size + 28), 10), white)
+                var h: UInt64 = 1469598103934665603
+                for i in 0..<n { for j in 0..<n {
+                    h = (h ^ UInt64(i * 31 + j)) &* 1099511628211
+                    let finder = (i < 7 && j < 7) || (i < 7 && j >= n - 7) || (i >= n - 7 && j < 7)
+                    let on = finder ? (i % 6 == 0 || j % 6 == 0 || (i % 6 >= 2 && i % 6 <= 4 && j % 6 >= 2 && j % 6 <= 4)) : (h >> 40) & 1 == 1
+                    if on { fillR(CGRect(x: x0 + Double(j) * size, y: y0 + Double(i) * size, width: size, height: size), black) }
+                } }
+            }
+            // the decoded message arrives in the island
+            let got = easeOut(prog(e, 5.3, 5.8)) * (1 - easeIn(prog(e, 9.4, 9.8)))
+            alpha(got) {
+                let isl = CGRect(x: s.midX - 150, y: s.minY, width: 300, height: 66)
+                fill(rr(isl, 22), rgb(0x000000))
+                stroke(rr(isl, 22), rgb(0x3D6BFF), 1.5)
+                appIcon(CGRect(x: isl.minX + 14, y: isl.minY + 16, width: 34, height: 34), 0x34C759, "message.fill")
+                text("Mum", 14, .semibold, white, x: isl.minX + 58, y: isl.minY + 14)
+                let full = "Dinner at 7? 🍞"
+                let shown = Int(Double(full.count) * prog(e, 5.4, 6.0))
+                text(String(full.prefix(shown)) + cipher(max(0, 8 - shown), Int(e * 20)).prefix(max(0, full.count - shown)), 13, .regular, rgb(0xFFFFFF, 0.8), x: isl.minX + 58, y: isl.minY + 34)
+            }
+        })
+    }
+
+    // the shared key: born between the devices, then one copy into each
+    let keyBorn = easeOut(prog(e, 1.2, 1.7)), keySplit = smoother(prog(e, 1.8, 2.5)), keyFade = 1 - easeIn(prog(e, 2.6, 3.0))
+    if keyBorn > 0 && keyFade > 0 {
+        alpha(keyBorn * keyFade) {
+            let center = CGPoint(x: W / 2, y: 545)
+            for (i, target) in [CGPoint(x: phone.midX, y: phone.midY), CGPoint(x: mac.midX, y: mac.minY + mac.height * 0.4)].enumerated() {
+                let p = lerpP(center, target, keySplit)
+                glow(p, 90, rgb(0x3D6BFF, 0.5))
+                fill(circle(p, 34), rgb(0x0B0D14)); stroke(circle(p, 34), rgb(0x8A9BFF), 2)
+                symbol("key.fill", 28, rgb(0xFFFFFF), p)
+                _ = i
+            }
+        }
+    }
+
+    // the message as ciphertext, locked, travelling across
+    let fly = prog(e, 3.4, 5.3)
+    if fly > 0 && fly < 1 {
+        let ease = smoother(fly)
+        let a = CGPoint(x: phone.midX, y: phone.midY), b = CGPoint(x: mac.midX, y: mac.minY + 60)
+        let p = CGPoint(x: mix(a.x, b.x, ease), y: mix(a.y, b.y, ease) - 220 * sin(.pi * ease))
+        // trail
+        for k in 1...14 {
+            let q = smoother(max(0, fly - Double(k) * 0.018))
+            let tp = CGPoint(x: mix(a.x, b.x, q), y: mix(a.y, b.y, q) - 220 * sin(.pi * q))
+            fill(circle(tp, 7 - Double(k) * 0.4), rgb(0x3D6BFF, 0.5 * (1 - Double(k) / 15)))
+        }
+        glow(p, 120, rgb(0x3D6BFF, 0.45))
+        let chip = CGRect(x: p.x - 170, y: p.y - 32, width: 340, height: 64)
+        fill(rr(chip, 32), rgb(0x0E1222))
+        ctx.saveGState(); ctx.addPath(rr(chip, 32)); ctx.setLineWidth(2); ctx.replacePathWithStrokedPath(); ctx.clip()
+        ctx.drawLinearGradient(gradient(accent), start: CGPoint(x: chip.minX, y: 0), end: CGPoint(x: chip.maxX, y: 0), options: []); ctx.restoreGState()
+        symbol("lock.fill", 22, white, CGPoint(x: chip.minX + 36, y: chip.midY))
+        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedSystemFont(ofSize: 20, weight: .medium), .foregroundColor: NSColor(white: 1, alpha: 0.9)]
+        NSAttributedString(string: cipher(20, Int(e * 24)), attributes: attrs).draw(at: CGPoint(x: chip.minX + 62, y: chip.minY + 19))
+    }
+    // the lock opens on arrival
+    let open = window(e, 5.2, 5.9, 0.15)
+    if open > 0 {
+        alpha(open) {
+            let p = CGPoint(x: mac.midX, y: mac.minY - 40)
+            glow(p, 90, rgb(0x34C759, 0.4))
+            symbol("lock.open.fill", 34, rgb(0x34C759), p)
+        }
+    }
+
+    // no cloud: the path stays between the devices
+    let local = easeOut(prog(e, 6.8, 7.4)) * (1 - easeIn(prog(e, 9.4, 9.9)))
+    if local > 0 {
+        alpha(local) {
+            let c = CGPoint(x: W / 2, y: 330)
+            symbol("cloud", 120, rgb(0xFFFFFF, 0.25), c, weight: .light)
+            let slash = CGMutablePath(); slash.move(to: CGPoint(x: c.x - 90, y: c.y - 70)); slash.addLine(to: CGPoint(x: c.x + 90, y: c.y + 70))
+            stroke(slash, rgb(0xFF453A), 6)
+            // a direct, glowing link between the devices
+            let y = 560.0
+            let pulse = (e * 0.8).truncatingRemainder(dividingBy: 1)
+            ctx.saveGState(); ctx.setLineDash(phase: -pulse * 40, lengths: [14, 12])
+            let link = CGMutablePath(); link.move(to: CGPoint(x: phone.maxX + 30, y: y)); link.addLine(to: CGPoint(x: mac.minX - 70, y: y))
+            stroke(link, rgb(0x00C6FF, 0.9), 4); ctx.restoreGState()
+            let mid = CGPoint(x: (phone.maxX + mac.minX) / 2 - 20, y: y)
+            fill(rr(CGRect(x: mid.x - 120, y: y + 26, width: 240, height: 44), 22), rgb(0xFFFFFF, 0.08))
+            text("Wi-Fi · Bluetooth · USB", 18, .medium, rgb(0xFFFFFF, 0.85), x: mid.x, y: y + 37, align: .center)
+        }
+    }
+}
+
+func mainFrame(_ time: Double) {
     t = time
     background()
 
