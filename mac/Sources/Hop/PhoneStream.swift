@@ -322,6 +322,14 @@ final class PhoneStream {
         }
     }
 
+    /// Opens an app on the phone by package name, or brings it to the front if it's already open.
+    func startApp(_ package: String) {
+        let name = Data(package.utf8.prefix(255))
+        var m = Data([16, UInt8(name.count)])
+        m.append(name)
+        send(m)
+    }
+
     func expandNotifications() { send(Data([5])) }
     /// Turns the phone's own display off or on; mirroring keeps working either way.
     func setDisplay(on: Bool) { send(Data([10, on ? 1 : 0])) }

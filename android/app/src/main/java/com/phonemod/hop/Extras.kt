@@ -163,7 +163,7 @@ object NotifBridge {
         if (title.isBlank() && text.isBlank()) return
         active[sbn.key] = sbn
         HopLink.sendNow(JSONObject().put("t", "notif").put("id", sbn.key)
-            .put("app", label(svc, sbn.packageName)).put("title", title.take(120)).put("text", text.take(400))
+            .put("app", label(svc, sbn.packageName)).put("pkg", sbn.packageName).put("title", title.take(120)).put("text", text.take(400))
             .put("reply", replyAction(n) != null).put("icon", icon(svc, sbn.packageName)))
     }
 
@@ -183,6 +183,16 @@ object NotifBridge {
         val results = Bundle().apply { inputs.forEach { putCharSequence(it.resultKey, text) } }
         RemoteInput.addResultsToIntent(inputs, intent, results)
         runCatching { action.actionIntent.send(ctx, 0, intent) }
+    }
+
+    /** Opens what the notification points to (the chat, the email…), as tapping it on the phone would. */
+    fun open(ctx: Context, id: String) {
+        val sbn = active[id] ?: return
+        val n = sbn.notification
+        val options = android.app.ActivityOptions.makeBasic()
+            .setPendingIntentBackgroundActivityStartMode(android.app.ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
+        runCatching { n.contentIntent?.send(ctx, 0, null, null, null, null, options.toBundle()) }
+        if (n.flags and Notification.FLAG_AUTO_CANCEL != 0) dismiss(id)
     }
 
     fun dismiss(id: String) {

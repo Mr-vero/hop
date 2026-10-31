@@ -40,6 +40,7 @@ class Inbox(private val ctx: Context) {
                     }
                     "notif-reply" -> NotifBridge.reply(ctx, msg.optString("id"), msg.optString("text"))
                     "notif-dismiss" -> NotifBridge.dismiss(msg.optString("id"))
+                    "notif-open" -> NotifBridge.open(ctx, msg.optString("id"))
                     "call-answer" -> NotifBridge.answer(ctx)
                     "call-decline" -> NotifBridge.decline(ctx)
                     "ring" -> Ringer.ring(ctx)

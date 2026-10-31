@@ -21,6 +21,13 @@ final class PhoneWindow: NSWindow {
     private var closing = false
     private var darkenedOnce = false
     private var dockAspect: CGFloat = 0
+    /** An app to bring up once the picture is live. */
+    private var pendingApp: String?
+
+    /// Opens an app on the phone (now if the picture is live, otherwise as soon as it is).
+    func startApp(_ package: String) {
+        if presented { stream.startApp(package) } else { pendingApp = package }
+    }
 
     init(stream: PhoneStream, title: String, dock: Bool = false) {
         self.stream = stream
@@ -53,7 +60,10 @@ final class PhoneWindow: NSWindow {
         stream.onFrame = { [weak self] sample in
             guard let self else { return }
             frameView.show(sample)
-            if !presented { present() }
+            if !presented {
+                present()
+                if let app = pendingApp { pendingApp = nil; stream.startApp(app) }
+            }
             // Like iPhone Mirroring: the phone goes dark while you use it from the Mac (⌘O toggles).
             // Dock mode runs on its own display, so the phone stays usable there.
             if !isDock, !darkenedOnce { darkenedOnce = true; stream.setDisplay(on: false) }

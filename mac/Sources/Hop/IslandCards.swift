@@ -11,6 +11,8 @@ final class NotificationCard: NSView, NSTextFieldDelegate {
     var onClose: () -> Void = {}
     var onHover: (Bool) -> Void = { _ in }
     var onReplying: () -> Void = {}
+    /** Clicked on the notification itself: open it on the phone. */
+    var onOpen: () -> Void = {}
     private(set) var replying = false
 
     private let icon = NSImageView()
@@ -58,6 +60,13 @@ final class NotificationCard: NSView, NSTextFieldDelegate {
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    override func mouseUp(with event: NSEvent) {
+        guard !replying, bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
+        onOpen()
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func mouseEntered(with event: NSEvent) { onHover(true) }
     override func mouseExited(with event: NSEvent) { onHover(false) }

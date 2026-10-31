@@ -25,7 +25,7 @@ final class ConnectHUD {
 
     /// A phone notification, with Reply when the app allows it. Stays while hovered or replying.
     func showNotification(id: String, app: String, title: String, text: String, icon: NSImage?, canReply: Bool,
-                          onReply: @escaping (String) -> Void, onDismiss: @escaping () -> Void) {
+                          onReply: @escaping (String) -> Void, onDismiss: @escaping () -> Void, onOpen: @escaping () -> Void) {
         if mode == .call, panel?.isVisible == true { return }
         mode = .notification(id)
         let card = NotificationCard(app: app, title: title, text: text, icon: icon, canReply: canReply)
@@ -36,6 +36,7 @@ final class ConnectHUD {
         }
         card.onDismiss = { [weak self] in onDismiss(); self?.hide() }
         card.onClose = { [weak self] in self?.hide() }
+        card.onOpen = { [weak self] in onOpen(); self?.hide() }
         card.onHover = { [weak self] inside in
             guard let self else { return }
             hovering = inside

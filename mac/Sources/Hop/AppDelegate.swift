@@ -359,6 +359,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Serv
         refresh()
     }
 
+    /// Clicking a notification in the island: the phone opens what it points to (the chat, the email…), and the
+    /// phone window opens on the Mac with that app in front.
+    private func openNotification(id: String, package: String?) {
+        server.sendJSON(["t": "notif-open", "id": id])
+        // Android may not let Hop open it from the background; bringing the app up through the window always works,
+        // and if the phone already opened the exact chat this just keeps it in front
+        if let package { mirror.openApp(package) }
+        if !mirror.isRunning {
+            autoMirror = false
+            startMirror(dock: false)
+        } else {
+            mirror.focus()
+        }
+    }
+
     @objc private func toggleClipboard() {
         clipboard.enabled.toggle()
         refresh()
@@ -553,7 +568,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Serv
             hud.showNotification(id: id, app: json["app"] as? String ?? "", title: json["title"] as? String ?? "",
                                  text: json["text"] as? String ?? "", icon: icon, canReply: json["reply"] as? Bool ?? false,
                                  onReply: { [weak self] text in self?.server.sendJSON(["t": "notif-reply", "id": id, "text": text]) },
-                                 onDismiss: { [weak self] in self?.server.sendJSON(["t": "notif-dismiss", "id": id]) })
+                                 onDismiss: { [weak self] in self?.server.sendJSON(["t": "notif-dismiss", "id": id]) },
+                                 onOpen: { [weak self] in self?.openNotification(id: id, package: json["pkg"] as? String) })
         case "notif-gone":
             if let id = json["id"] as? String { hud.removeNotification(id: id) }
         case "call":

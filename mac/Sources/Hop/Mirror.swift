@@ -67,6 +67,7 @@ final class Mirror {
         stream.onEnded = { [weak w] _ in w?.close() }
         stream.start()
         window = w
+        if let app = pendingApp { pendingApp = nil; w.startApp(app) }
         onChange()
         // The window stays hidden until the first picture; give up if none comes
         Task { [weak self, weak w] in
@@ -79,7 +80,20 @@ final class Mirror {
         window?.close()
     }
 
+    func focus() {
+        NSApp.activate()
+        window?.makeKeyAndOrderFront(nil)
+    }
+
     var isDock: Bool { window?.isDock == true }
+
+    /** An app to open on the phone once the window is up. */
+    private var pendingApp: String?
+
+    /// Opens an app on the phone inside Hop's window (opening the window first if needed is up to the caller).
+    func openApp(_ package: String) {
+        if let window { window.startApp(package) } else { pendingApp = package }
+    }
     var isShowing: Bool { window?.presented == true }
 
     /// A desktop display shaped like this Mac's screen, about 1920 pixels wide.
