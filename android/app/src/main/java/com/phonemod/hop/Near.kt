@@ -159,7 +159,7 @@ object NearScanner {
         ContextCompat.checkSelfPermission(ctx, Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED
 
     /** dBm at or above which the Mac counts as near; set by calibrating from the Mac. */
-    fun threshold(ctx: Context) = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt("nearThreshold", -40) // right beside the Mac reads about -25
+    fun threshold(ctx: Context) = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt("nearThreshold", -45) // right beside the Mac reads about -25
 
     fun calibrate(ctx: Context): Int? {
         val r = rssi ?: return null
