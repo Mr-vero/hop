@@ -2,35 +2,47 @@ import AppKit
 import AVFoundation
 import QuartzCore
 
-/// A borderless window drawn as a Galaxy S25 Ultra-style phone: titanium frame, thin black bezel,
-/// camera hole and working side buttons. Drag the frame to move it; the screen is fully interactive.
+/// Either a borderless window drawn as a Galaxy S25 Ultra-style phone (titanium frame, thin black bezel,
+/// camera hole and working side buttons; drag the frame to move it), or in dock mode an ordinary,
+/// resizable Mac window showing the phone's separate desktop display, which can go full screen.
 @MainActor
 final class PhoneWindow: NSWindow {
     private let frameView: PhoneFrameView
     private let stream: PhoneStream
+    let isDock: Bool
     var onClose: () -> Void = {}
     private var darkenedOnce = false
+    private var dockAspect: CGFloat = 0
 
-    init(stream: PhoneStream, title: String) {
+    init(stream: PhoneStream, title: String, dock: Bool = false) {
         self.stream = stream
-        frameView = PhoneFrameView(stream: stream)
-        super.init(contentRect: NSRect(x: 0, y: 0, width: 400, height: 860), styleMask: [.borderless], backing: .buffered, defer: false)
-        self.title = title
-        isOpaque = false
-        backgroundColor = .clear
-        hasShadow = true
-        isMovableByWindowBackground = true
+        isDock = dock
+        frameView = PhoneFrameView(stream: stream, bezel: !dock)
+        let style: NSWindow.StyleMask = dock ? [.titled, .closable, .miniaturizable, .resizable] : [.borderless]
+        super.init(contentRect: NSRect(x: 0, y: 0, width: dock ? 1280 : 400, height: dock ? 800 : 860), styleMask: style, backing: .buffered, defer: false)
+        self.title = dock ? "\(title) · Dock" : title
         isReleasedWhenClosed = false
-        collectionBehavior = [.fullScreenNone]
         contentView = frameView
         frameView.onClose = { [weak self] in self?.close() }
+        if dock {
+            backgroundColor = .black
+            collectionBehavior = [.fullScreenPrimary]
+            tabbingMode = .disallowed
+        } else {
+            isOpaque = false
+            backgroundColor = .clear
+            hasShadow = true
+            isMovableByWindowBackground = true
+            collectionBehavior = [.fullScreenNone]
+        }
 
         stream.onFormat = { [weak self] desc, size in self?.frameView.setVideo(size: size, format: desc); self?.fit(animated: true) }
         stream.onFrame = { [weak self] sample in
             guard let self else { return }
             frameView.show(sample)
-            // Like iPhone Mirroring: the phone goes dark while you use it from the Mac (⌘O toggles)
-            if !darkenedOnce { darkenedOnce = true; stream.setDisplay(on: false) }
+            // Like iPhone Mirroring: the phone goes dark while you use it from the Mac (⌘O toggles).
+            // Dock mode runs on its own display, so the phone stays usable there.
+            if !isDock, !darkenedOnce { darkenedOnce = true; stream.setDisplay(on: false) }
         }
         stream.onClipboard = { text in
             NSPasteboard.general.clearContents()
@@ -52,6 +64,19 @@ final class PhoneWindow: NSWindow {
     /// Sizes the window so the phone is about 80% of the screen's height (or width when landscape).
     func fit(animated: Bool) {
         let visible = (screen ?? NSScreen.main)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        if isDock {
+            // A normal window: keep the desktop's shape while resizing, start at most of the screen
+            let v = frameView.videoAspect
+            // Only size it when the desktop's shape changes (first picture), never fighting the user's own resizing
+            guard v != dockAspect, !styleMask.contains(.fullScreen) else { return }
+            dockAspect = v
+            contentAspectRatio = NSSize(width: v, height: 1)
+            var w = visible.width * 0.85, h = w / v
+            if h > visible.height * 0.85 { h = visible.height * 0.85; w = h * v }
+            setContentSize(NSSize(width: w, height: h))
+            center()
+            return
+        }
         let size = frameView.idealSize(maxSize: CGSize(width: visible.width * 0.8, height: visible.height * 0.86) * frameView.zoom)
         var f = frame
         f.origin.y += f.height - size.height
@@ -62,6 +87,7 @@ final class PhoneWindow: NSWindow {
     }
 
     func zoom(by factor: CGFloat) {
+        guard !isDock else { return }
         frameView.zoom = max(0.5, min(1.3, frameView.zoom * factor))
         fit(animated: true)
     }
@@ -72,6 +98,8 @@ private func * (s: CGSize, k: CGFloat) -> CGSize { CGSize(width: s.width * k, he
 @MainActor
 final class PhoneFrameView: NSView {
     private let stream: PhoneStream
+    /** False in dock mode: no phone body, the picture fills the window. */
+    private let bezel: Bool
     private let display = AVSampleBufferDisplayLayer()
     private let screenMask = CAShapeLayer()
     private let camera = CALayer()
@@ -80,9 +108,11 @@ final class PhoneFrameView: NSView {
     var zoom: CGFloat = 1
     var onClose: () -> Void = {}
 
-    init(stream: PhoneStream) {
+    init(stream: PhoneStream, bezel: Bool = true) {
         self.stream = stream
+        self.bezel = bezel
         super.init(frame: .zero)
+        if !bezel { videoSize = CGSize(width: 1920, height: 1200) } // until the desktop's real size arrives
         wantsLayer = true
         layer?.backgroundColor = .clear
         display.videoGravity = .resize
@@ -92,6 +122,8 @@ final class PhoneFrameView: NSView {
         camera.backgroundColor = NSColor.black.cgColor
         camera.borderColor = NSColor(white: 0.18, alpha: 1).cgColor
         layer?.addSublayer(camera)
+        camera.isHidden = !bezel
+        if !bezel { layer?.backgroundColor = NSColor.black.cgColor }
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
     }
 
@@ -104,6 +136,7 @@ final class PhoneFrameView: NSView {
     // MARK: geometry (proportions measured from an S25 Ultra: square-ish corners, very thin bezel)
 
     private var landscape: Bool { videoSize.width > videoSize.height }
+    var videoAspect: CGFloat { videoSize.width / videoSize.height }
     private var shortSide: CGFloat { min(screenRect.width, screenRect.height) }
 
     /// Titanium frame, black bezel and the side-button margin, as fractions of the screen's short side.
@@ -126,6 +159,13 @@ final class PhoneFrameView: NSView {
 
     private var screenRect: CGRect {
         let b = bounds
+        if !bezel {
+            // Fit the picture in the window, centred
+            let aspect = videoSize.width / videoSize.height
+            var w = b.width, h = w / aspect
+            if h > b.height { h = b.height; w = h * aspect }
+            return CGRect(x: (b.width - w) / 2, y: (b.height - h) / 2, width: w, height: h)
+        }
         // Estimate from bounds: the short side shares a fixed ratio with the frame
         let aspect = videoSize.width / videoSize.height
         let k: CGFloat = 0.022 + 0.024
@@ -148,6 +188,7 @@ final class PhoneFrameView: NSView {
 
     /// Side buttons in body coordinates: volume rocker then power, on the right edge (top edge in landscape).
     private var buttonRects: [(rect: CGRect, keycode: UInt32)] {
+        guard bezel else { return [] }
         let body = bodyRect, m = metrics(short: shortSide)
         let len = landscape ? body.width : body.height
         func seg(_ from: CGFloat, _ to: CGFloat) -> CGRect {
@@ -168,7 +209,8 @@ final class PhoneFrameView: NSView {
         CATransaction.setDisableActions(true)
         let s = screenRect, m = metrics(short: shortSide)
         display.frame = s
-        screenMask.path = CGPath(roundedRect: CGRect(origin: .zero, size: s.size), cornerWidth: m.screenRadius, cornerHeight: m.screenRadius, transform: nil)
+        let radius = bezel ? m.screenRadius : 0
+        screenMask.path = CGPath(roundedRect: CGRect(origin: .zero, size: s.size), cornerWidth: radius, cornerHeight: radius, transform: nil)
         let d = shortSide * 0.03
         let c = landscape ? CGPoint(x: s.minX + shortSide * 0.045, y: s.midY) : CGPoint(x: s.midX, y: s.minY + shortSide * 0.045)
         camera.frame = CGRect(x: c.x - d / 2, y: c.y - d / 2, width: d, height: d)
@@ -181,7 +223,7 @@ final class PhoneFrameView: NSView {
     // MARK: drawing the body
 
     override func draw(_ dirtyRect: NSRect) {
-        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+        guard bezel, let ctx = NSGraphicsContext.current?.cgContext else { return }
         let body = bodyRect, m = metrics(short: shortSide)
         let outerRadius = m.screenRadius + m.titanium + m.bezel
 
@@ -286,12 +328,12 @@ final class PhoneFrameView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
-        if hovering, closeRect.insetBy(dx: -4, dy: -4).contains(p) { onClose(); return }
+        if bezel, hovering, closeRect.insetBy(dx: -4, dy: -4).contains(p) { onClose(); return }
         if let b = buttonRects.first(where: { $0.rect.insetBy(dx: -3, dy: -3).contains(p) }) { stream.key(b.keycode); return }
         if let d = devicePoint(event) {
             touching = true
             stream.touch(.down, at: d, screen: videoSize)
-        } else {
+        } else if bezel {
             window?.performDrag(with: event) // the frame moves the phone around
         }
     }

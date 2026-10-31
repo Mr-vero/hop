@@ -11,8 +11,9 @@ final class PhoneStream {
         var serverJar: String
         var serverVersion: String
         var wireless: Bool
-        /** No picture or sound: just the Mac's keyboard and mouse on the phone, which stays on as usual. */
-        var controlOnly = false
+        /** Dock mode: the phone opens a separate desktop-sized display (e.g. "1920x1200/200") and streams that
+            instead of its own screen, which stays usable on the phone. */
+        var newDisplay: String? = nil
     }
 
     /// Called on the main queue.
@@ -20,8 +21,6 @@ final class PhoneStream {
     var onFrame: (CMSampleBuffer) -> Void = { _ in }
     var onClipboard: (String) -> Void = { _ in }
     var onEnded: (String?) -> Void = { _ in }
-    /** The connection is up and input can be sent. */
-    var onReady: () -> Void = {}
 
     private let config: Config
     private var server: Process?
@@ -42,15 +41,9 @@ final class PhoneStream {
         Thread.detachNewThread { [self] in
             do {
                 try connect()
-                DispatchQueue.main.async { self.onReady() }
-                if !config.controlOnly {
-                    Thread.detachNewThread { [self] in runVideo() }
-                    Thread.detachNewThread { [self] in runAudio() }
-                }
-                Thread.detachNewThread { [self] in
-                    runControlReader()
-                    if config.controlOnly { finish(stopped ? nil : "The phone disconnected.") }
-                }
+                Thread.detachNewThread { [self] in runVideo() }
+                Thread.detachNewThread { [self] in runAudio() }
+                Thread.detachNewThread { [self] in runControlReader() }
             } catch {
                 finish("Couldn't start the phone screen (\(error)).")
             }
@@ -83,10 +76,12 @@ final class PhoneStream {
 
         let p = Process()
         p.executableURL = URL(fileURLWithPath: adb)
-        let options = config.controlOnly
-            ? ["video=false", "audio=false", "stay_awake=false", "power_off_on_close=false"]
-            : ["video_bit_rate=\(config.wireless ? 6_000_000 : 12_000_000)", "max_size=\(config.wireless ? 1600 : 2340)",
-               "audio_codec=raw", "stay_awake=true", "power_off_on_close=true"]
+        var options = ["video_bit_rate=\(config.wireless ? 8_000_000 : 16_000_000)", "audio_codec=raw"]
+        if let display = config.newDisplay {
+            options += ["new_display=\(display)", "max_size=0", "stay_awake=false", "power_off_on_close=false"]
+        } else {
+            options += ["max_size=\(config.wireless ? 1600 : 2340)", "stay_awake=true", "power_off_on_close=true"]
+        }
         p.arguments = ["-s", serial, "shell", "CLASSPATH=/data/local/tmp/scrcpy-server.jar", "app_process", "/",
                        "com.genymobile.scrcpy.Server", config.serverVersion,
                        "scid=\(scid)", "log_level=info", "tunnel_forward=true"] + options
@@ -102,12 +97,6 @@ final class PhoneStream {
             if let s = try? BlockingSocket(port: port), (try? s.read(1)) != nil { first = s } else { Thread.sleep(forTimeInterval: 0.1) }
         }
         guard let v = first else { throw StreamError.timeout }
-        if config.controlOnly {
-            // Only one socket in this mode, and it carries the device name first
-            control = v
-            _ = try v.read(64)
-            return
-        }
         video = v
         audio = try BlockingSocket(port: port)
         control = try BlockingSocket(port: port)
@@ -289,28 +278,6 @@ final class PhoneStream {
         m.append(paste ? 1 : 0)
         m.appendBE(UInt32(utf8.count))
         m.append(utf8)
-        send(m)
-    }
-
-    // MARK: virtual keyboard and mouse (Android sees real USB-style devices; same format as scrcpy's UHID mode)
-
-    func uhidCreate(id: UInt16, name: String, descriptor: [UInt8]) {
-        var m = Data([12])
-        m.appendBE(id); m.appendBE(UInt16(0x18D1)); m.appendBE(UInt16(0x4E50 + id)) // vendor/product: generic
-        let n = Data(name.utf8.prefix(127))
-        m.append(UInt8(n.count)); m.append(n)
-        m.appendBE(UInt16(descriptor.count)); m.append(contentsOf: descriptor)
-        send(m)
-    }
-
-    func uhidInput(id: UInt16, report: [UInt8]) {
-        var m = Data([13])
-        m.appendBE(id); m.appendBE(UInt16(report.count)); m.append(contentsOf: report)
-        send(m)
-    }
-
-    func uhidDestroy(id: UInt16) {
-        var m = Data([14]); m.appendBE(id)
         send(m)
     }
 

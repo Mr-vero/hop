@@ -27,18 +27,21 @@ final class Mirror {
 
     /// A connection to the phone (not started yet). `phoneIP` is the address of the phone's Hop
     /// connection, used when there's no cable.
-    static func openStream(phoneIP: String?, controlOnly: Bool = false) async throws -> PhoneStream {
+    static func openStream(phoneIP: String?, newDisplay: String? = nil) async throws -> PhoneStream {
         guard let jar = serverJar else { throw Failure.notInstalled }
         let serial = try await findPhone(phoneIP: phoneIP)
         return PhoneStream(config: .init(serial: serial, adb: "\(brew)/adb", serverJar: jar.path, serverVersion: jar.version,
-                                         wireless: serial.contains(":"), controlOnly: controlOnly))
+                                         wireless: serial.contains(":"), newDisplay: newDisplay))
     }
 
-    /// Starts mirroring in Hop's phone-shaped window.
-    func start(phoneIP: String?, title: String) async throws {
-        if let window, window.isVisible { window.makeKeyAndOrderFront(nil); return }
-        let stream = try await Self.openStream(phoneIP: phoneIP)
-        let w = PhoneWindow(stream: stream, title: title)
+    /// Shows the phone in Hop's phone-shaped window, or with `dock` its desktop in a big Mac window.
+    func start(phoneIP: String?, title: String, dock: Bool = false) async throws {
+        if let window, window.isVisible {
+            if window.isDock == dock { window.makeKeyAndOrderFront(nil); return }
+            window.close() // switching between phone and dock
+        }
+        let stream = try await Self.openStream(phoneIP: phoneIP, newDisplay: dock ? Self.dockDisplaySize() : nil)
+        let w = PhoneWindow(stream: stream, title: title, dock: dock)
         w.onClose = { [weak self] in self?.window = nil; self?.onChange() }
         stream.onEnded = { [weak w] _ in w?.close() }
         stream.start()
@@ -50,6 +53,15 @@ final class Mirror {
 
     func stop() {
         window?.close()
+    }
+
+    var isDock: Bool { window?.isDock == true }
+
+    /// A desktop display shaped like this Mac's screen, about 1920 pixels wide.
+    private static func dockDisplaySize() -> String {
+        let f = NSScreen.main?.visibleFrame.size ?? CGSize(width: 1512, height: 945)
+        let w = 1920, h = Int(Double(w) * f.height / f.width) / 8 * 8
+        return "\(w)x\(h)/200"
     }
 
     // MARK: adb
@@ -78,6 +90,8 @@ final class Mirror {
             let out = (try? await adb(["connect", target])) ?? ""
             if out.contains("connected to") { return target }
         }
+        // The phone may have a new address; adb may already be connected to it wirelessly
+        if let wireless = devices.first(where: { $0.contains(":") }) { return wireless }
         throw Failure.noPhone
     }
 

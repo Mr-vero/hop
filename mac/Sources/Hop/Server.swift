@@ -25,7 +25,9 @@ final class HopServer {
 
     var serviceName: String { "Hop-\(pairing.serviceId)" }
     /** Wi-Fi address of the connected phone, used to mirror its screen without a cable. */
-    private(set) var phoneAddress: String?
+    private(set) var phoneAddress: String? = UserDefaults.standard.string(forKey: "phoneAddress") {
+        didSet { UserDefaults.standard.set(phoneAddress, forKey: "phoneAddress") }
+    }
     var isConnected: Bool { session?.phoneName != nil }
 
     func start() {

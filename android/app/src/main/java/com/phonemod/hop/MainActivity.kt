@@ -78,6 +78,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         HopLink.init(this)
         HopLink.poke()
+        HopLink.nearChanged() // from the foreground, Android allows the near-Mac service to start
         setContent { HopTheme { Home() } }
     }
 
@@ -144,7 +145,7 @@ class MainActivity : ComponentActivity() {
                 }
                 val nearOn = NearBeacon.allowed(this@MainActivity)
                 SetupRow(
-                    "Near your Mac", "Next to your Mac, use its keyboard and mouse on this phone. Right up against it, the phone appears on the Mac's screen. Uses a private Bluetooth signal only your Mac recognises.",
+                    "Near your Mac", "Bring the phone close to your Mac and it appears on the Mac's screen. Uses a private Bluetooth signal only your Mac recognises.",
                     done = nearOn, action = "Allow",
                 ) { nearPermission.launch(Manifest.permission.BLUETOOTH_ADVERTISE) }
                 SetupRow("Quick Settings tile", "One tap in the pull-down panel sends your clipboard to the Mac.", done = false, action = "Add") {

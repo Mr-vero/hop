@@ -8,6 +8,9 @@
     <uses-permission android:name="android.permission.RECEIVE_SMS" />
     <!-- Only to send Hop's own "I'm here" signal to the paired Mac; never used to find or locate other devices -->
     <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+    <!-- Keeps the near-Mac signal and the "lying on the Mac" sensor running, with a quiet notification -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
 
     <application
         android:name=".HopApp"
@@ -49,6 +52,11 @@
             android:excludeFromRecents="true"
             android:taskAffinity=""
             android:theme="@style/Theme.Hop.Overlay" />
+
+        <service
+            android:name=".NearService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
 
         <service
             android:name=".ClipTile"
