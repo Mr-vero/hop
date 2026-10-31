@@ -8,6 +8,7 @@ import android.net.NetworkRequest
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.Build
+import android.os.SystemClock
 import android.provider.Settings
 import android.util.Base64
 import kotlinx.coroutines.CoroutineExceptionHandler
@@ -61,6 +62,10 @@ object HopLink {
     private var socket: Socket? = null
     private var out: DataOutputStream? = null
     private var crypto: SessionCrypto? = null
+
+    /** When the Mac last sent anything; a ping it doesn't answer means the link is dead. */
+    @Volatile var lastHeard = 0L
+    @Volatile private var lastProbe = 0L
 
     /** The current Wi-Fi network, tracked by callback. Wi-Fi may not be the default network (mobile data can be). */
     @Volatile private var wifi: Network? = null
@@ -164,13 +169,15 @@ object HopLink {
             if (host != pairing.host || port != pairing.port) pairing.withAddress(app, host, port)
             _state.value = LinkState.Connected(hello.optString("name", pairing.macName))
             scope.launch { delay(300); PhoneStatus.report(true); NearScanner.announce() }
-            // We ping every 2 minutes and the Mac answers, so silence for 5 means the link is dead
+            // We ping every 2 minutes and the Mac answers. A write can sit unsent in the socket buffer for many
+            // minutes when the Mac is gone, so it's the missing answer that tells us the link is dead.
             s.soTimeout = 300_000
+            lastHeard = SystemClock.elapsedRealtime()
 
             val pinger = scope.launch {
                 while (isActive) {
                     delay(120_000)
-                    runCatching { writeLock.withLock { writeJson(JSONObject().put("t", "ping")) } }.onFailure { s.close() }
+                    probe()
                 }
             }
             try {
@@ -223,6 +230,22 @@ object HopLink {
                 sent += n
                 progress(sent.toFloat() / size.coerceAtLeast(1))
             }
+        }
+    }
+
+    /**
+     * Pings the Mac and drops the link if no answer comes back within 15 seconds, so the next connection can start.
+     * Also called when the phone comes near the Mac, the moment a stale link would be noticed.
+     */
+    fun probe() {
+        val s = socket ?: return
+        val sent = SystemClock.elapsedRealtime()
+        if (sent - lastProbe < 20_000) return
+        lastProbe = sent
+        scope.launch {
+            runCatching { writeLock.withLock { writeJson(JSONObject().put("t", "ping")) } }.onFailure { s.close(); return@launch }
+            delay(15_000)
+            if (lastHeard < sent && socket === s) s.close()
         }
     }
 

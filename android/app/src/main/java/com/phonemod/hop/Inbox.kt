@@ -29,6 +29,7 @@ class Inbox(private val ctx: Context) {
         try {
             while (true) {
                 val plain = crypto.open(Frames.read(input))
+                HopLink.lastHeard = android.os.SystemClock.elapsedRealtime()
                 if (plain[0].toInt() == 1) { chunk(plain); continue }
                 val msg = JSONObject(String(plain, 1, plain.size - 1))
                 when (msg.optString("t")) {

@@ -410,7 +410,18 @@ final class BlockingSocket {
         }
     }
 
-    func close() { Darwin.shutdown(fd, SHUT_RDWR); Darwin.close(fd) }
+    private let closeLock = NSLock()
+    private var closed = false
+
+    func close() {
+        closeLock.lock(); defer { closeLock.unlock() }
+        guard !closed else { return }
+        closed = true
+        Darwin.shutdown(fd, SHUT_RDWR); Darwin.close(fd)
+    }
+
+    // Sockets dropped without close (the startup probes that get no answer) must not leak their descriptor
+    deinit { close() }
 }
 
 /// Plays the phone's raw audio with a small buffer so sound stays in sync with the picture.

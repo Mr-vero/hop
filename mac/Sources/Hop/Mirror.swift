@@ -112,7 +112,8 @@ final class Mirror {
                 let cols = line.split(separator: "\t")
                 return cols.count == 2 && cols[1] == "device" ? String(cols[0]) : nil
             }
-        if let usb = devices.first(where: { !$0.contains(":") }) {
+        // A cable shows up as a bare serial; emulators do too ("emulator-5554") but are never the user's phone.
+        if let usb = devices.first(where: { !$0.contains(":") && !$0.hasPrefix("emulator-") }) {
             // While the cable is in, switch on wireless debugging so next time works without it
             // (it stays on until the phone restarts). This briefly restarts adb on the phone.
             if setUpWireless, let ip = phoneIP, !devices.contains("\(ip):5555") {

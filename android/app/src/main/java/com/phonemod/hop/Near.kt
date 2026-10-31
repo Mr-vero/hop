@@ -261,6 +261,8 @@ object NearScanner {
                 near = wants
                 pendingSince = 0
                 report(force = true)
+                // Coming near is when the user expects the Mac to respond, so make sure the link is alive
+                if (near) HopLink.probe()
             }
         } else pendingSince = 0
         if (now - lastReport > 10_000) report(force = false)
